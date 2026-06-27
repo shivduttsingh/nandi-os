@@ -609,7 +609,7 @@ def tradingview_page() -> None:
     st.components.v1.html(tv_widget, height=780)
 
     def universe_engine_page() -> None:
-    from urllib.parse import quote
+        from urllib.parse import quote
 
     page_title(
         "Universe Engine",

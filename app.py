@@ -2,18 +2,26 @@ from engine.market_engine import market_bias_engine
 from engine.strategy_engine import rsi_24_78_signal
 from engine.risk_engine import risk_check
 from engine.nandi_brain import nandi_decision
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from textwrap import dedent
 
 st.set_page_config(
     page_title="Nandi OS",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={"About": "Nandi OS - Private AI Finance Platform"}
 )
 
 APP_PASSWORD = "nandi123"
+
+
+def html(code):
+    st.markdown(dedent(code).strip(), unsafe_allow_html=True)
+
 
 BULL_LOGO = """
 <svg class="nandi-logo" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg">
@@ -66,7 +74,7 @@ CSS = """
     }
 
     section[data-testid="stSidebar"] {
-        background: rgba(255,255,255,.82);
+        background: rgba(255,255,255,.92);
         border-right: 1px solid var(--line);
     }
 
@@ -180,7 +188,7 @@ CSS = """
 
     .card,
     .mini-card {
-        background: rgba(255,255,255,.88);
+        background: rgba(255,255,255,.90);
         border: 1px solid var(--line);
         border-radius: 24px;
         padding: 22px;
@@ -368,7 +376,7 @@ CSS = """
 </style>
 """
 
-st.markdown(CSS, unsafe_allow_html=True)
+html(CSS)
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -477,89 +485,77 @@ def candle_chart(values, width=620, height=255):
 def login_page():
     prices = make_series()
 
-    st.markdown(
-        f"""
-        <div class="topline">
-            <div class="brand-box">
-                {BULL_LOGO}
-                <div>
-                    <div class="brand-title">Nandi OS</div>
-                    <div class="brand-subtitle">Private AI Finance Platform</div>
-                </div>
-                <div style="margin-left:auto;">
-                    <span class="pill"><span class="dot"></span> All Systems Operational</span>
-                </div>
+    html(f"""
+    <div class="topline">
+        <div class="brand-box">
+            {BULL_LOGO}
+            <div>
+                <div class="brand-title">Nandi OS</div>
+                <div class="brand-subtitle">Private AI Finance Platform</div>
+            </div>
+            <div style="margin-left:auto;">
+                <span class="pill"><span class="dot"></span> All Systems Operational</span>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    </div>
+    """)
 
     left, right = st.columns([1.08, 1], gap="large")
 
     with left:
-        st.markdown(
-            f"""
-            <div class="hero-title">
-                AI-Powered Research.<br>
-                <span>Smarter Decisions.</span>
-            </div>
-            <div class="hero-copy">
-                Market intelligence, research notes, strategy testing, watchlist,
-                private memory, and daily planning inside one clean workspace.
-            </div>
+        html(f"""
+        <div class="hero-title">
+            AI-Powered Research.<br>
+            <span>Smarter Decisions.</span>
+        </div>
+        <div class="hero-copy">
+            Market intelligence, research notes, strategy testing, watchlist,
+            private memory, and daily planning inside one clean workspace.
+        </div>
 
-            <div class="card">
-                <div class="card-title">
-                    Market Pulse <span class="tag" style="float:right;">Live</span>
-                </div>
-                <div class="muted">NIFTY 50</div>
-                <div class="big-green">24,926.15</div>
-                <div class="green">+196.35 (+0.79%)</div>
-                {sparkline(prices[-55:])}
-                <div class="row">
-                    <span>High 24,951.80</span>
-                    <span>Low 24,684.10</span>
-                    <span>Adv <b class="green">1,638</b></span>
-                    <span>Dec <b class="red">742</b></span>
-                </div>
+        <div class="card">
+            <div class="card-title">
+                Market Pulse <span class="tag" style="float:right;">Live</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="muted">NIFTY 50</div>
+            <div class="big-green">24,926.15</div>
+            <div class="green">+196.35 (+0.79%)</div>
+            {sparkline(prices[-55:])}
+            <div class="row">
+                <span>High 24,951.80</span>
+                <span>Low 24,684.10</span>
+                <span>Adv <b class="green">1,638</b></span>
+                <span>Dec <b class="red">742</b></span>
+            </div>
+        </div>
+        """)
 
         st.write("")
 
-        st.markdown(
-            f"""
-            <div class="card">
-                <div class="card-title">
-                    Finance Research Preview <span class="tag" style="float:right;">NIFTY 15m</span>
-                </div>
-                {candle_chart(prices)}
-                <div class="row">
-                    <span>Trend: <b class="green">Bullish</b></span>
-                    <span>Momentum: <b class="green">Strong</b></span>
-                    <span>Risk: <b class="orange">Medium</b></span>
-                </div>
+        html(f"""
+        <div class="card">
+            <div class="card-title">
+                Finance Research Preview <span class="tag" style="float:right;">NIFTY 15m</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            {candle_chart(prices)}
+            <div class="row">
+                <span>Trend: <b class="green">Bullish</b></span>
+                <span>Momentum: <b class="green">Strong</b></span>
+                <span>Risk: <b class="orange">Medium</b></span>
+            </div>
+        </div>
+        """)
 
     with right:
-        st.markdown(
-            f"""
-            <div style="text-align:center;margin-bottom:18px;">
-                {BULL_LOGO}
-                <h1 style="margin:6px 0 4px 0;font-size:34px;letter-spacing:-1px;">
-                    Welcome back 👋
-                </h1>
-                <div class="muted">Sign in to access your private Nandi workspace</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        html(f"""
+        <div style="text-align:center;margin-bottom:18px;">
+            {BULL_LOGO}
+            <h1 style="margin:6px 0 4px 0;font-size:34px;letter-spacing:-1px;">
+                Welcome back 👋
+            </h1>
+            <div class="muted">Sign in to access your private Nandi workspace</div>
+        </div>
+        """)
 
         with st.form("login"):
             username = st.text_input("Email or Username", placeholder="Enter email or username")
@@ -574,44 +570,36 @@ def login_page():
                 else:
                     st.error("Use password: nandi123")
 
-            st.markdown(
-                """
-                <div style="text-align:center;color:#65746c;font-size:13px;margin-top:18px;">
-                    🛡 Private Workspace | AI Research Mode | Secure Access
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            html("""
+            <div style="text-align:center;color:#65746c;font-size:13px;margin-top:18px;">
+                🛡 Private Workspace | AI Research Mode | Secure Access
+            </div>
+            """)
 
 
 def sidebar():
     with st.sidebar:
-        st.markdown(
-            f"""
-            <div class="brand-box">
-                {BULL_LOGO}
-                <div>
-                    <div class="brand-title">Nandi OS</div>
-                    <div class="brand-subtitle">Private AI<br>Finance Platform</div>
-                </div>
+        html(f"""
+        <div class="brand-box">
+            {BULL_LOGO}
+            <div>
+                <div class="brand-title">Nandi OS</div>
+                <div class="brand-subtitle">Private AI<br>Finance Platform</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        </div>
+        """)
 
         pages = [
-
-    "Command Center",
-    "Finance Research",
-    "Nandi Chat",
-    "Memory Core",
-    "Goals",
-    "Daily Updates",
-    "Strategy Lab",
-    "Watchlist",
-    "Nandi Decision Engine",
-    "Settings",
-
+            "Command Center",
+            "Finance Research",
+            "Nandi Chat",
+            "Memory Core",
+            "Goals",
+            "Daily Updates",
+            "Strategy Lab",
+            "Watchlist",
+            "Nandi Decision Engine",
+            "Settings",
         ]
 
         for page in pages:
@@ -619,18 +607,15 @@ def sidebar():
                 st.session_state.page = page
                 rerun()
 
-        st.markdown(
-            """
-            <div class="nav-note">
-                <b>System Status</b><br><br>
-                <div class="row"><span>Model Engine</span><b class="green">Online</b></div>
-                <div class="row"><span>Data Feeds</span><b class="green">Live</b></div>
-                <div class="row"><span>Memory</span><b class="green">Active</b></div>
-                <div class="row"><span>Last sync</span><b>09:30 IST</b></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        html("""
+        <div class="nav-note">
+            <b>System Status</b><br><br>
+            <div class="row"><span>Model Engine</span><b class="green">Online</b></div>
+            <div class="row"><span>Data Feeds</span><b class="green">Live</b></div>
+            <div class="row"><span>Memory</span><b class="green">Active</b></div>
+            <div class="row"><span>Last sync</span><b>09:30 IST</b></div>
+        </div>
+        """)
 
         if st.button("Logout"):
             st.session_state.logged_in = False
@@ -650,213 +635,189 @@ def command_center():
         )
 
     with top_right:
-        st.markdown(
-            f"""
-            <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;">
-                <span class="pill">☀ Theme</span>
-                <span class="pill">🔔 3</span>
-                <span class="pill">👤 {st.session_state.username}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"""
-        <div style="margin-top:22px;margin-bottom:22px;">
-            <div class="muted">Good morning, {st.session_state.username} 👋</div>
-            <div class="main-title">Financial Research Command Center</div>
-            <div class="subtitle">AI-powered research, strategy analysis, and market intelligence.</div>
-            <span class="pill"><span class="dot"></span> All Systems Active</span>
-            <span class="pill">📅 {datetime.now().strftime("%d %b %Y")} · {datetime.now().strftime("%I:%M %p")} IST</span>
+        html(f"""
+        <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;">
+            <span class="pill">☀ Theme</span>
+            <span class="pill">🔔 3</span>
+            <span class="pill">👤 {st.session_state.username}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """)
+
+    html(f"""
+    <div style="margin-top:22px;margin-bottom:22px;">
+        <div class="muted">Good morning, {st.session_state.username} 👋</div>
+        <div class="main-title">Financial Research Command Center</div>
+        <div class="subtitle">AI-powered research, strategy analysis, and market intelligence.</div>
+        <span class="pill"><span class="dot"></span> All Systems Active</span>
+        <span class="pill">📅 {datetime.now().strftime("%d %b %Y")} · {datetime.now().strftime("%I:%M %p")} IST</span>
+    </div>
+    """)
 
     c1, c2, c3, c4 = st.columns(4, gap="large")
 
     with c1:
-        st.markdown(
-            f"""
-            <div class="card">
-                <div class="card-title">
-                    Market Pulse <span class="tag" style="float:right;">Live</span>
-                </div>
-                <div class="muted">NIFTY 50</div>
-                <div class="big-green">24,926.15</div>
-                <div class="green">+196.35 (+0.79%)</div>
-                {sparkline(prices[-55:])}
-                <div class="row"><span>High</span><b>24,951.80</b></div>
-                <div class="row"><span>Low</span><b>24,684.10</b></div>
-                <div class="row"><span>Adv</span><b class="green">1,638</b></div>
-                <div class="row"><span>Dec</span><b class="red">742</b></div>
+        html(f"""
+        <div class="card">
+            <div class="card-title">
+                Market Pulse <span class="tag" style="float:right;">Live</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="muted">NIFTY 50</div>
+            <div class="big-green">24,926.15</div>
+            <div class="green">+196.35 (+0.79%)</div>
+            {sparkline(prices[-55:])}
+            <div class="row"><span>High</span><b>24,951.80</b></div>
+            <div class="row"><span>Low</span><b>24,684.10</b></div>
+            <div class="row"><span>Adv</span><b class="green">1,638</b></div>
+            <div class="row"><span>Dec</span><b class="red">742</b></div>
+        </div>
+        """)
 
     with c2:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">
-                    Research Engine <span class="tag" style="float:right;">Active</span>
-                </div>
-                <div class="gauge">
-                    <div class="gauge-inner">
-                        <div class="gauge-number">74</div>
-                        <div class="muted">/100</div>
-                    </div>
-                </div>
-                <div class="row"><span>Bullish Setups</span><b class="green">18</b></div>
-                <div class="row"><span>Bearish Setups</span><b class="red">6</b></div>
-                <div class="row"><span>Neutral</span><b>4</b></div>
+        html("""
+        <div class="card">
+            <div class="card-title">
+                Research Engine <span class="tag" style="float:right;">Active</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="gauge">
+                <div class="gauge-inner">
+                    <div class="gauge-number">74</div>
+                    <div class="muted">/100</div>
+                </div>
+            </div>
+            <div class="row"><span>Bullish Setups</span><b class="green">18</b></div>
+            <div class="row"><span>Bearish Setups</span><b class="red">6</b></div>
+            <div class="row"><span>Neutral</span><b>4</b></div>
+        </div>
+        """)
 
     with c3:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">
-                    Memory Core <span class="tag" style="float:right;">Learning</span>
-                </div>
-                <div class="row"><span>Patterns Tracked</span><b>18,642</b></div>
-                <div class="row"><span>Scenarios Stored</span><b>1,248</b></div>
-                <div class="row"><span>Models Evolved</span><b>23</b></div>
-                <div class="row"><span>Active Memory</span><b class="green">98.7%</b></div>
-                <br>
-                <div class="progress-track">
-                    <div class="progress-fill" style="width:98%;"></div>
-                </div>
-                <br>
-                <div class="muted">Last update: 09:28 AM IST</div>
+        html("""
+        <div class="card">
+            <div class="card-title">
+                Memory Core <span class="tag" style="float:right;">Learning</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="row"><span>Patterns Tracked</span><b>18,642</b></div>
+            <div class="row"><span>Scenarios Stored</span><b>1,248</b></div>
+            <div class="row"><span>Models Evolved</span><b>23</b></div>
+            <div class="row"><span>Active Memory</span><b class="green">98.7%</b></div>
+            <br>
+            <div class="progress-track">
+                <div class="progress-fill" style="width:98%;"></div>
+            </div>
+            <br>
+            <div class="muted">Last update: 09:28 AM IST</div>
+        </div>
+        """)
 
     with c4:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">
-                    Today's Focus <span class="tag" style="float:right;">60%</span>
-                </div>
-                <div class="row"><span>✅ NIFTY Structure Analysis</span></div>
-                <div class="row"><span>✅ Bank Nifty Scenario Study</span></div>
-                <div class="row"><span>✅ Global Market Correlation</span></div>
-                <div class="row"><span>○ Sector Rotation Scan</span></div>
-                <div class="row"><span>○ Research Watchlist</span></div>
-                <br>
-                <div class="progress-track">
-                    <div class="progress-fill" style="width:60%;"></div>
-                </div>
+        html("""
+        <div class="card">
+            <div class="card-title">
+                Today's Focus <span class="tag" style="float:right;">60%</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="row"><span>✅ NIFTY Structure Analysis</span></div>
+            <div class="row"><span>✅ Bank Nifty Scenario Study</span></div>
+            <div class="row"><span>✅ Global Market Correlation</span></div>
+            <div class="row"><span>○ Sector Rotation Scan</span></div>
+            <div class="row"><span>○ Research Watchlist</span></div>
+            <br>
+            <div class="progress-track">
+                <div class="progress-fill" style="width:60%;"></div>
+            </div>
+        </div>
+        """)
 
     st.write("")
 
     left, right = st.columns([1.25, 1], gap="large")
 
     with left:
-        st.markdown(
-            f"""
-            <div class="card">
-                <div class="card-title">
-                    Finance Research Panel
-                    <span class="tag" style="float:right;">NIFTY 50 · 15m</span>
-                </div>
+        html(f"""
+        <div class="card">
+            <div class="card-title">
+                Finance Research Panel
+                <span class="tag" style="float:right;">NIFTY 50 · 15m</span>
+            </div>
 
-                <div style="display:grid;grid-template-columns:210px 1fr;gap:16px;">
-                    <div>
-                        <div class="scenario">
-                            <b>Primary Scenario</b> <span class="tag">Bullish</span><br>
-                            <span class="muted">Continuation above 24,700</span><br>
-                            <b>Target 25,200 – 25,500</b>
-                        </div>
-                        <div class="scenario">
-                            <b>Alternate Scenario</b> <span class="tag tag-orange">Neutral</span><br>
-                            <span class="muted">Range bound 24,400 – 25,200</span>
-                        </div>
-                        <div class="scenario">
-                            <b>Risk Scenario</b> <span class="tag tag-red">Bearish</span><br>
-                            <span class="muted">Breakdown below 24,400</span><br>
-                            <b>Target 24,000 – 23,800</b>
-                        </div>
+            <div style="display:grid;grid-template-columns:210px 1fr;gap:16px;">
+                <div>
+                    <div class="scenario">
+                        <b>Primary Scenario</b> <span class="tag">Bullish</span><br>
+                        <span class="muted">Continuation above 24,700</span><br>
+                        <b>Target 25,200 – 25,500</b>
                     </div>
-
-                    <div>
-                        {candle_chart(prices)}
+                    <div class="scenario">
+                        <b>Alternate Scenario</b> <span class="tag tag-orange">Neutral</span><br>
+                        <span class="muted">Range bound 24,400 – 25,200</span>
+                    </div>
+                    <div class="scenario">
+                        <b>Risk Scenario</b> <span class="tag tag-red">Bearish</span><br>
+                        <span class="muted">Breakdown below 24,400</span><br>
+                        <b>Target 24,000 – 23,800</b>
                     </div>
                 </div>
 
-                <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
-                    <span class="pill">Trend: Bullish</span>
-                    <span class="pill">Momentum: Strong</span>
-                    <span class="pill">Volume: Above Avg</span>
-                    <span class="pill">Risk: Medium</span>
+                <div>
+                    {candle_chart(prices)}
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
+                <span class="pill">Trend: Bullish</span>
+                <span class="pill">Momentum: Strong</span>
+                <span class="pill">Volume: Above Avg</span>
+                <span class="pill">Risk: Medium</span>
+            </div>
+        </div>
+        """)
 
     with right:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">
-                    Paper Journal / Backtests <span class="tag" style="float:right;">View All</span>
-                </div>
-
-                <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                    <tr>
-                        <th align="left">Title</th>
-                        <th align="left">Type</th>
-                        <th align="left">Result</th>
-                        <th align="left">Score</th>
-                    </tr>
-                    <tr>
-                        <td>NIFTY Breakout Study</td>
-                        <td>Backtest</td>
-                        <td class="green">+1.34%</td>
-                        <td><span class="tag">78/100</span></td>
-                    </tr>
-                    <tr>
-                        <td>Bank Nifty Call Study</td>
-                        <td>Backtest</td>
-                        <td class="green">+0.92%</td>
-                        <td><span class="tag">72/100</span></td>
-                    </tr>
-                    <tr>
-                        <td>Opening Range Momentum</td>
-                        <td>Journal</td>
-                        <td class="green">+0.68%</td>
-                        <td><span class="tag">65/100</span></td>
-                    </tr>
-                    <tr>
-                        <td>Midcap Rotation Scan</td>
-                        <td>Backtest</td>
-                        <td class="red">-0.21%</td>
-                        <td><span class="tag tag-red">52/100</span></td>
-                    </tr>
-                    <tr>
-                        <td>Global Cues Impact</td>
-                        <td>Journal</td>
-                        <td class="green">+0.44%</td>
-                        <td><span class="tag">60/100</span></td>
-                    </tr>
-                </table>
+        html("""
+        <div class="card">
+            <div class="card-title">
+                Paper Journal / Backtests <span class="tag" style="float:right;">View All</span>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <tr>
+                    <th align="left">Title</th>
+                    <th align="left">Type</th>
+                    <th align="left">Result</th>
+                    <th align="left">Score</th>
+                </tr>
+                <tr>
+                    <td>NIFTY Breakout Study</td>
+                    <td>Backtest</td>
+                    <td class="green">+1.34%</td>
+                    <td><span class="tag">78/100</span></td>
+                </tr>
+                <tr>
+                    <td>Bank Nifty Call Study</td>
+                    <td>Backtest</td>
+                    <td class="green">+0.92%</td>
+                    <td><span class="tag">72/100</span></td>
+                </tr>
+                <tr>
+                    <td>Opening Range Momentum</td>
+                    <td>Journal</td>
+                    <td class="green">+0.68%</td>
+                    <td><span class="tag">65/100</span></td>
+                </tr>
+                <tr>
+                    <td>Midcap Rotation Scan</td>
+                    <td>Backtest</td>
+                    <td class="red">-0.21%</td>
+                    <td><span class="tag tag-red">52/100</span></td>
+                </tr>
+                <tr>
+                    <td>Global Cues Impact</td>
+                    <td>Journal</td>
+                    <td class="green">+0.44%</td>
+                    <td><span class="tag">60/100</span></td>
+                </tr>
+            </table>
+        </div>
+        """)
 
     st.write("")
 
@@ -870,7 +831,7 @@ def command_center():
         ("CRUDE OIL", "64.15", "-0.18 (-0.28%)", "#e14646", 7),
     ]
 
-    html = """
+    ticker_html = """
     <div class="mini-card">
         <div class="card-title">
             Market Watch <span class="tag" style="float:right;">Customize</span>
@@ -880,7 +841,7 @@ def command_center():
 
     for name, price, move, color, seed in tickers:
         move_class = "green" if "+" in move else "red"
-        html += f"""
+        ticker_html += f"""
         <div class="ticker-card">
             <div class="ticker-name">{name}</div>
             <div class="ticker-price" style="color:{color};">{price}</div>
@@ -889,22 +850,19 @@ def command_center():
         </div>
         """
 
-    html += """
+    ticker_html += """
         </div>
     </div>
     """
 
-    st.markdown(html, unsafe_allow_html=True)
+    html(ticker_html)
 
 
 def simple_page(title, subtitle):
-    st.markdown(
-        f"""
-        <div class="main-title">{title}</div>
-        <div class="subtitle">{subtitle}</div>
-        """,
-        unsafe_allow_html=True,
-    )
+    html(f"""
+    <div class="main-title">{title}</div>
+    <div class="subtitle">{subtitle}</div>
+    """)
 
 
 def finance_research():
@@ -913,35 +871,29 @@ def finance_research():
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">Research Setup</div>
-                <div class="scenario"><b>NIFTY:</b> Bullish above 24,700. Risk below 24,400.</div>
-                <div class="scenario"><b>BANK NIFTY:</b> Watch call-side buildup and first 15-minute range.</div>
-                <div class="scenario"><b>Global Cues:</b> Track US futures, DXY, crude, gold, and VIX.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        html("""
+        <div class="card">
+            <div class="card-title">Research Setup</div>
+            <div class="scenario"><b>NIFTY:</b> Bullish above 24,700. Risk below 24,400.</div>
+            <div class="scenario"><b>BANK NIFTY:</b> Watch call-side buildup and first 15-minute range.</div>
+            <div class="scenario"><b>Global Cues:</b> Track US futures, DXY, crude, gold, and VIX.</div>
+        </div>
+        """)
 
     with c2:
-        st.markdown(
-            """
-            <div class="card">
-                <div class="card-title">Research Output</div>
-                <span class="pill">Bullish Setup Detected</span><br><br>
-                <div class="muted">Confidence Score</div>
-                <div class="big-green">74 / 100</div>
-                <div class="progress-track">
-                    <div class="progress-fill" style="width:74%;"></div>
-                </div>
-                <br>
-                <div class="muted">Research output only. Not financial advice.</div>
+        html("""
+        <div class="card">
+            <div class="card-title">Research Output</div>
+            <span class="pill">Bullish Setup Detected</span><br><br>
+            <div class="muted">Confidence Score</div>
+            <div class="big-green">74 / 100</div>
+            <div class="progress-track">
+                <div class="progress-fill" style="width:74%;"></div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <br>
+            <div class="muted">Research output only. Not financial advice.</div>
+        </div>
+        """)
 
 
 def nandi_chat():
@@ -1010,6 +962,8 @@ def strategy_lab():
             st.error("CSV must contain Close column.")
             return
 
+        result = rsi_24_78_signal(df)
+
         delta = df["Close"].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -1023,6 +977,9 @@ def strategy_lab():
         df["Signal"] = "Hold"
         df.loc[df["RSI"] <= 24, "Signal"] = "Buy Zone"
         df.loc[df["RSI"] >= 78, "Signal"] = "Exit Zone"
+
+        st.metric("Latest Strategy Signal", result.get("signal", "No Signal"))
+        st.write(result.get("reason", ""))
 
         st.dataframe(df.tail(80), use_container_width=True)
         st.line_chart(df[["Close", "RSI"]])
@@ -1040,15 +997,13 @@ def watchlist():
         rerun()
 
     for symbol in st.session_state.watchlist:
-        st.markdown(
-            f"""
-            <div class="mini-card" style="margin-bottom:10px;">
-                <b>☆ {symbol}</b>
-                <span style="float:right;" class="green">Active</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        html(f"""
+        <div class="mini-card" style="margin-bottom:10px;">
+            <b>☆ {symbol}</b>
+            <span style="float:right;" class="green">Active</span>
+        </div>
+        """)
+
 
 def nandi_decision_engine_page():
     simple_page("Nandi Decision Engine", "Market bias + strategy signal + risk check = final Nandi action.")
@@ -1091,6 +1046,8 @@ def nandi_decision_engine_page():
         st.write(f"✅ {reason}")
 
     st.info("Research support only. Not guaranteed profit or financial advice.")
+
+
 def settings():
     simple_page("Settings", "Control Nandi OS preferences.")
 

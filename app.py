@@ -606,6 +606,7 @@ else:
 
     pages: Dict[str, Callable[[], None]] = {
         "Command Center": command_center,
+        "TradingView Live Chart": tradingview_page,
         "Finance Research": finance_research,
         "Nandi CEO": nandi_ceo,
         "Nandi Chat": nandi_chat,

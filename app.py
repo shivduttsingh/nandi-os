@@ -1,9 +1,11 @@
 from datetime import datetime
 from typing import Dict, Callable
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from engine.market_engine import market_bias_engine
 from engine.strategy_engine import rsi_24_78_signal
@@ -20,6 +22,7 @@ st.set_page_config(
 
 APP_USERNAME = st.secrets["auth"]["username"]
 APP_PASSWORD = st.secrets["auth"]["password"]
+
 
 st.markdown(
     """
@@ -102,6 +105,15 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 
+def clean_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.lower() in ["nan", "none", "nat"]:
+        return ""
+    return text
+
+
 @st.cache_data
 def make_series(seed: int = 10, points: int = 80, start: float = 24600) -> pd.Series:
     rng = np.random.default_rng(seed)
@@ -170,6 +182,7 @@ def login_page() -> None:
         )
 
         c1, c2 = st.columns(2)
+
         with c1:
             with st.container(border=True):
                 st.subheader("Market Pulse")
@@ -206,7 +219,7 @@ def login_page() -> None:
                     st.session_state.username = username.split("@")[0].title()
                     st.rerun()
                 else:
-                    st.error("Use password: nandi123")
+                    st.error("Invalid username or password.")
 
             st.info("Private Workspace | AI Research Mode | Secure Access")
 
@@ -241,7 +254,8 @@ def sidebar() -> None:
         st.divider()
         st.write("System Status")
         st.write("Model Engine: Online")
-        st.write("Data Feeds: Demo Mode")
+        st.write("Data Feeds: Foundation Mode")
+        st.write("Universe: Auto-Refresh")
         st.write("Memory: Active")
         st.write("Last Sync: 09:30 IST")
 
@@ -267,7 +281,7 @@ def command_center() -> None:
     s1, s2, s3 = st.columns(3)
     s1.success("All Systems Active")
     s2.info(datetime.now().strftime("%d %b %Y · %I:%M %p IST"))
-    s3.warning("Data Mode: Demo / Foundation Build")
+    s3.warning("Data Mode: Foundation Build")
 
     st.divider()
 
@@ -336,6 +350,233 @@ def command_center() -> None:
         st.dataframe(demo_market_table(), use_container_width=True, hide_index=True)
 
 
+def universe_engine_page() -> None:
+    page_title(
+        "Universe Engine",
+        "Automatic Indian market universe with free TradingView chart access.",
+    )
+
+    stats = get_universe_stats()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Instruments", stats.get("total_instruments", 0))
+    c2.metric("NSE", stats.get("nse_count", 0))
+    c3.metric("BSE", stats.get("bse_count", 0))
+    c4.metric("MCX / Core", stats.get("mcx_count", 0))
+
+    st.caption(f"Last updated: {stats.get('last_updated', 'Not available')}")
+
+    if st.button("Refresh Indian Market Universe", use_container_width=True):
+        with st.spinner("Updating Indian stock universe..."):
+            load_master_universe(force_refresh=True)
+        st.success("Universe updated successfully.")
+        st.rerun()
+
+    st.divider()
+
+    search_text = st.text_input(
+        "Search Indian stock / index / commodity",
+        placeholder="Example: TATA, RELIANCE, SBIN, BANKNIFTY, CRUDEOIL",
+    )
+
+    results = search_universe(search_text, limit=200)
+
+    if results.empty:
+        st.warning("No result found. Try another symbol or company name.")
+        return
+
+    results = results.copy()
+
+    for col in ["exchange", "symbol", "name", "instrument_type", "segment", "tradingview_symbol"]:
+        if col not in results.columns:
+            results[col] = ""
+
+    results["exchange"] = results["exchange"].apply(clean_text)
+    results["symbol"] = results["symbol"].apply(clean_text)
+    results["name"] = results["name"].apply(clean_text)
+    results["instrument_type"] = results["instrument_type"].apply(clean_text)
+    results["segment"] = results["segment"].apply(clean_text)
+    results["tradingview_symbol"] = results["tradingview_symbol"].apply(clean_text)
+
+    missing_exchange = results["exchange"].eq("") & results["tradingview_symbol"].str.contains(":", na=False)
+    results.loc[missing_exchange, "exchange"] = results.loc[missing_exchange, "tradingview_symbol"].str.split(":").str[0]
+
+    st.subheader("Search Results")
+
+    show_cols = [
+        "exchange",
+        "symbol",
+        "name",
+        "instrument_type",
+        "segment",
+        "tradingview_symbol",
+    ]
+
+    st.dataframe(results[show_cols], use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    options = []
+
+    for idx, row in results.iterrows():
+        exchange = clean_text(row.get("exchange", ""))
+        symbol = clean_text(row.get("symbol", ""))
+        name = clean_text(row.get("name", ""))
+        tv_symbol = clean_text(row.get("tradingview_symbol", ""))
+
+        label = f"{exchange} | {symbol} | {name} | {tv_symbol}"
+        options.append((label, idx))
+
+    if not options:
+        st.warning("No selectable instrument found.")
+        return
+
+    selected_label = st.selectbox(
+        "Select instrument",
+        [item[0] for item in options],
+    )
+
+    selected_index = dict(options)[selected_label]
+    selected_row = results.loc[selected_index]
+
+    tv_symbol = clean_text(selected_row.get("tradingview_symbol", ""))
+
+    if not tv_symbol:
+        st.error("TradingView symbol not available for this instrument.")
+        return
+
+    encoded_symbol = quote(tv_symbol, safe="")
+
+    st.success(f"Selected: {tv_symbol}")
+
+    st.link_button(
+        f"Open {tv_symbol} in free TradingView chart",
+        f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
+        use_container_width=True,
+    )
+
+    st.info(
+        "Main chart opens in TradingView free website. "
+        "This is more reliable because some Indian symbols are blocked inside embedded widgets."
+    )
+
+    st.divider()
+
+    show_embedded = st.checkbox(
+        "Try embedded chart inside Nandi OS",
+        value=False,
+        help="Some symbols may not load here because of TradingView widget restrictions.",
+    )
+
+    if show_embedded:
+        interval = st.selectbox(
+            "Timeframe",
+            ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
+            index=3,
+        )
+
+        chart_url = (
+            f"https://s.tradingview.com/widgetembed/"
+            f"?symbol={encoded_symbol}"
+            f"&interval={interval}"
+            f"&hidesidetoolbar=0"
+            f"&symboledit=1"
+            f"&saveimage=1"
+            f"&toolbarbg=F1F3F6"
+            f"&studies=[]"
+            f"&theme=light"
+            f"&style=1"
+            f"&timezone=Asia%2FKolkata"
+            f"&withdateranges=1"
+            f"&hideideas=1"
+            f"&locale=in"
+        )
+
+        components.iframe(chart_url, height=760, scrolling=False)
+
+
+def tradingview_page() -> None:
+    page_title(
+        "TradingView Live Chart",
+        "Free TradingView chart access for Indian markets.",
+    )
+
+    symbol_map = {
+        "NIFTY 50": "NSE:NIFTY",
+        "BANK NIFTY": "NSE:BANKNIFTY",
+        "FINNIFTY": "NSE:CNXFINANCE",
+        "SENSEX": "BSE:SENSEX",
+        "RELIANCE": "NSE:RELIANCE",
+        "HDFC BANK": "NSE:HDFCBANK",
+        "INFOSYS": "NSE:INFY",
+        "INDIA VIX": "NSE:INDIAVIX",
+        "CRUDE OIL": "MCX:CRUDEOIL1!",
+        "NATURAL GAS": "MCX:NATURALGAS1!",
+        "GOLD": "MCX:GOLD1!",
+    }
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        selected = st.selectbox("Quick Market", list(symbol_map.keys()), index=1)
+
+    with col2:
+        manual_symbol = st.text_input(
+            "Or type TradingView symbol",
+            placeholder="Example: NSE:TCS, NSE:SBIN, NSE:TATASTEEL",
+        )
+
+    if manual_symbol.strip():
+        symbol = manual_symbol.strip().upper()
+        if ":" not in symbol:
+            symbol = f"NSE:{symbol}"
+    else:
+        symbol = symbol_map[selected]
+
+    encoded_symbol = quote(symbol, safe="")
+
+    st.success(f"Selected: {symbol}")
+
+    st.link_button(
+        f"Open {symbol} in free TradingView chart",
+        f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
+        use_container_width=True,
+    )
+
+    st.info(
+        "Use the free TradingView button as the main chart option. "
+        "Embedded chart is optional because some Indian symbols are blocked inside widgets."
+    )
+
+    show_embedded = st.checkbox("Try embedded chart inside Nandi OS", value=False)
+
+    if show_embedded:
+        interval = st.selectbox(
+            "Timeframe",
+            ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
+            index=3,
+        )
+
+        chart_url = (
+            f"https://s.tradingview.com/widgetembed/"
+            f"?symbol={encoded_symbol}"
+            f"&interval={interval}"
+            f"&hidesidetoolbar=0"
+            f"&symboledit=1"
+            f"&saveimage=1"
+            f"&toolbarbg=F1F3F6"
+            f"&studies=[]"
+            f"&theme=light"
+            f"&style=1"
+            f"&timezone=Asia%2FKolkata"
+            f"&withdateranges=1"
+            f"&hideideas=1"
+            f"&locale=in"
+        )
+
+        components.iframe(chart_url, height=760, scrolling=False)
+
+
 def finance_research() -> None:
     page_title("Finance Research", "Scenario planning, market structure, and research notes.")
 
@@ -397,6 +638,7 @@ def nandi_chat() -> None:
             st.write(message)
 
     prompt = st.chat_input("Ask Nandi...")
+
     if prompt:
         st.session_state.chat_history.append(("user", prompt))
         st.session_state.chat_history.append(
@@ -429,6 +671,7 @@ def goals() -> None:
     st.checkbox("Build Nandi OS clean UI", value=True)
     st.checkbox("Add login", value=True)
     st.checkbox("Add Nandi Decision Engine", value=True)
+    st.checkbox("Add Universe Engine", value=True)
     st.checkbox("Add real market data")
     st.checkbox("Add option chain / OI logic")
     st.checkbox("Add AI chat and memory")
@@ -476,6 +719,7 @@ def strategy_lab() -> None:
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
     rs = avg_gain / avg_loss
+
     df["RSI"] = 100 - (100 / (1 + rs))
 
     df["Signal"] = "Hold"
@@ -550,203 +794,13 @@ def nandi_decision_engine_page() -> None:
     st.info("Research support only. Not guaranteed profit or financial advice.")
 
 
-def tradingview_page() -> None:
-    page_title(
-        "TradingView Live Chart",
-        "Live chart view for NIFTY, BANKNIFTY, SENSEX, commodities, and stocks.",
-    )
-
-    symbol_map = {
-        "NIFTY 50": "NSE:NIFTY",
-        "BANK NIFTY": "NSE:BANKNIFTY",
-        "FINNIFTY": "NSE:CNXFINANCE",
-        "SENSEX": "BSE:SENSEX",
-        "RELIANCE": "NSE:RELIANCE",
-        "HDFC BANK": "NSE:HDFCBANK",
-        "INFOSYS": "NSE:INFY",
-        "INDIA VIX": "NSE:INDIAVIX",
-        "CRUDE OIL": "MCX:CRUDEOIL1!",
-        "NATURAL GAS": "MCX:NATURALGAS1!",
-        "GOLD": "MCX:GOLD1!",
-    }
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        selected = st.selectbox("Select Market", list(symbol_map.keys()), index=1)
-
-    with col2:
-        interval = st.selectbox(
-            "Timeframe",
-            ["1", "3", "5", "15", "30", "60", "D"],
-            index=3,
-        )
-
-    symbol = symbol_map[selected]
-
-    st.info("TradingView is for live visual charting. Trade execution stays manual for now.")
-
-    tv_widget = f"""
-    <div class="tradingview-widget-container" style="height:760px;width:100%">
-      <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-      {{
-        "autosize": true,
-        "symbol": "{symbol}",
-        "interval": "{interval}",
-        "timezone": "Asia/Kolkata",
-        "theme": "light",
-        "style": "1",
-        "locale": "in",
-        "allow_symbol_change": true,
-        "calendar": false,
-        "support_host": "https://www.tradingview.com"
-      }}
-      </script>
-    </div>
-    """
-
-    st.components.v1.html(tv_widget, height=780)
-
-    def universe_engine_page() -> None:
-        from urllib.parse import quote
-
-    page_title(
-        "Universe Engine",
-        "Automatic Indian market universe with free TradingView chart access."
-    )
-
-    stats = get_universe_stats()
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Instruments", stats.get("total_instruments", 0))
-    c2.metric("NSE", stats.get("nse_count", 0))
-    c3.metric("BSE", stats.get("bse_count", 0))
-    c4.metric("MCX / Core", stats.get("mcx_count", 0))
-
-    st.caption(f"Last updated: {stats.get('last_updated', 'Not available')}")
-
-    if st.button("Refresh Indian Market Universe", use_container_width=True):
-        with st.spinner("Updating Indian stock universe..."):
-            load_master_universe(force_refresh=True)
-        st.success("Universe updated successfully.")
-        st.rerun()
-
-    st.divider()
-
-    search_text = st.text_input(
-        "Search Indian stock / index / commodity",
-        placeholder="Example: TATA, RELIANCE, SBIN, BANKNIFTY, CRUDEOIL"
-    )
-
-    results = search_universe(search_text, limit=200)
-
-    if results.empty:
-        st.warning("No result found. Try another symbol or company name.")
-        return
-
-    results = results.copy()
-
-    if "tradingview_symbol" in results.columns:
-        results["exchange"] = results["exchange"].fillna(
-            results["tradingview_symbol"].astype(str).str.split(":").str[0]
-        )
-
-    st.subheader("Search Results")
-
-    show_cols = [
-        "exchange",
-        "symbol",
-        "name",
-        "instrument_type",
-        "segment",
-        "tradingview_symbol",
-    ]
-
-    available_cols = [col for col in show_cols if col in results.columns]
-    st.dataframe(results[available_cols], use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    options = []
-
-    for idx, row in results.iterrows():
-        exchange = row.get("exchange", "")
-        symbol = row.get("symbol", "")
-        name = row.get("name", "")
-        tv_symbol = row.get("tradingview_symbol", "")
-
-        label = f"{exchange} | {symbol} | {name} | {tv_symbol}"
-        options.append((label, idx))
-
-    selected_label = st.selectbox(
-        "Select instrument",
-        [item[0] for item in options],
-    )
-
-    selected_index = dict(options)[selected_label]
-    selected_row = results.loc[selected_index]
-
-    tv_symbol = selected_row["tradingview_symbol"]
-    encoded_symbol = quote(tv_symbol, safe="")
-
-    st.success(f"Selected: {tv_symbol}")
-
-    st.link_button(
-        f"Open {tv_symbol} in free TradingView chart",
-        f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
-        use_container_width=True,
-    )
-
-    st.info(
-        "Main chart will open in TradingView free website. "
-        "This is more reliable because some Indian symbols are blocked inside embedded widgets."
-    )
-
-    st.divider()
-
-    show_embedded = st.checkbox(
-        "Try embedded chart inside Nandi OS",
-        value=False,
-        help="Some symbols may not load here because of TradingView widget restrictions."
-    )
-
-    if show_embedded:
-        interval = st.selectbox(
-            "Timeframe",
-            ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
-            index=3,
-        )
-
-        chart_url = (
-            f"https://s.tradingview.com/widgetembed/"
-            f"?symbol={encoded_symbol}"
-            f"&interval={interval}"
-            f"&hidesidetoolbar=0"
-            f"&symboledit=1"
-            f"&saveimage=1"
-            f"&toolbarbg=F1F3F6"
-            f"&studies=[]"
-            f"&theme=light"
-            f"&style=1"
-            f"&timezone=Asia%2FKolkata"
-            f"&withdateranges=1"
-            f"&hideideas=1"
-            f"&locale=in"
-        )
-
-        st.components.v1.iframe(chart_url, height=760, scrolling=False)
-
 def settings() -> None:
-
-    page_title(
-    "Settings", "Control Nandi OS preferences."
-    )
+    page_title("Settings", "Control Nandi OS preferences.")
 
     st.text_input("Display Name", value=st.session_state.username)
     st.selectbox("Theme", ["Premium Mint", "Clean White", "Deep Green"])
     st.selectbox("Mode", ["Research Mode", "Trading Mode", "Personal AI Mode"])
-    st.warning("Current login is demo/local only. Later we will add secure password hashing.")
+    st.warning("Current login uses Streamlit Secrets. Later we can add stronger user management.")
 
 
 if not st.session_state.logged_in:

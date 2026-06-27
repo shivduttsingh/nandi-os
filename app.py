@@ -200,7 +200,7 @@ def login_page() -> None:
                 submitted = st.form_submit_button("Sign In", use_container_width=True)
 
             if submitted:
-                if username.strip() and password == APP_PASSWORD:
+                if username.strip() == APP_USERNAME and password == APP_PASSWORD:
                     st.session_state.logged_in = True
                     st.session_state.username = username.split("@")[0].title()
                     st.rerun()

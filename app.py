@@ -1114,6 +1114,7 @@ else:
         "Daily Updates": daily_updates,
         "Strategy Lab": strategy_lab,
         "Watchlist": watchlist,
+        "Nandi Decision Engine": nandi_decision_engine_page,
         "Settings": settings,
     }
 

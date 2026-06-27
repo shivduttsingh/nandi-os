@@ -17,8 +17,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-APP_PASSWORD = "nandi123"
-
 
 st.markdown(
     """

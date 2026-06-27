@@ -8,8 +8,17 @@ import yfinance as yf
 from engine.universe_engine import load_master_universe
 
 
+def clean_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.lower() in ["nan", "none", "nat"]:
+        return ""
+    return text
+
+
 def to_yahoo_nse_symbol(symbol: str) -> str:
-    symbol = str(symbol).strip().upper()
+    symbol = clean_text(symbol).upper()
 
     if symbol.endswith(".NS") or symbol.endswith(".BO"):
         return symbol
@@ -25,14 +34,22 @@ def get_nse_stock_universe(limit: Optional[int] = None) -> pd.DataFrame:
 
     df = universe.copy()
 
-    for col in ["exchange", "instrument_type", "segment", "symbol", "name"]:
+    for col in ["exchange", "instrument_type", "segment", "symbol", "name", "tradingview_symbol"]:
         if col not in df.columns:
             df[col] = ""
 
-    df["exchange"] = df["exchange"].astype(str).str.upper().str.strip()
-    df["instrument_type"] = df["instrument_type"].astype(str).str.lower().str.strip()
-    df["segment"] = df["segment"].astype(str).str.lower().str.strip()
-    df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+    df["exchange"] = df["exchange"].apply(clean_text).str.upper()
+    df["instrument_type"] = df["instrument_type"].apply(clean_text).str.lower()
+    df["segment"] = df["segment"].apply(clean_text).str.lower()
+    df["symbol"] = df["symbol"].apply(clean_text).str.upper()
+    df["name"] = df["name"].apply(clean_text)
+    df["tradingview_symbol"] = df["tradingview_symbol"].apply(clean_text).str.upper()
+
+    missing_exchange = df["exchange"].eq("") & df["tradingview_symbol"].str.startswith("NSE:")
+    df.loc[missing_exchange, "exchange"] = "NSE"
+
+    missing_symbol = df["symbol"].eq("") & df["tradingview_symbol"].str.startswith("NSE:")
+    df.loc[missing_symbol, "symbol"] = df.loc[missing_symbol, "tradingview_symbol"].str.replace("NSE:", "", regex=False)
 
     df = df[
         (df["exchange"] == "NSE")
@@ -41,8 +58,12 @@ def get_nse_stock_universe(limit: Optional[int] = None) -> pd.DataFrame:
     ]
 
     df = df[df["symbol"].str.len() > 0]
-    df = df.drop_duplicates(subset=["symbol"], keep="first")
     df = df[~df["symbol"].isin(["NAN", "NONE", ""])]
+    df = df.drop_duplicates(subset=["symbol"], keep="first")
+
+    # Avoid symbols that Yahoo usually cannot read properly.
+    df = df[~df["symbol"].str.contains(" ", na=False)]
+    df = df[~df["symbol"].str.contains("&", na=False)]
 
     if limit:
         df = df.head(limit)
@@ -54,14 +75,14 @@ def download_daily_data_for_symbols(
     symbols: List[str],
     period: str = "6mo",
     interval: str = "1d",
-    chunk_size: int = 40,
+    chunk_size: int = 25,
 ) -> Dict[str, pd.DataFrame]:
     output: Dict[str, pd.DataFrame] = {}
 
     clean_symbols = []
 
     for symbol in symbols:
-        symbol = str(symbol).strip().upper()
+        symbol = clean_text(symbol).upper()
 
         if symbol and symbol not in clean_symbols:
             clean_symbols.append(symbol)
@@ -92,7 +113,9 @@ def download_daily_data_for_symbols(
         for original_symbol, yahoo_symbol in zip(batch_symbols, yahoo_symbols):
             try:
                 if isinstance(raw.columns, pd.MultiIndex):
-                    if yahoo_symbol not in raw.columns.get_level_values(0):
+                    available_tickers = list(raw.columns.get_level_values(0).unique())
+
+                    if yahoo_symbol not in available_tickers:
                         continue
 
                     df = raw[yahoo_symbol].copy()

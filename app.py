@@ -9,6 +9,7 @@ from engine.market_engine import market_bias_engine
 from engine.strategy_engine import rsi_24_78_signal
 from engine.risk_engine import risk_check
 from engine.nandi_brain import nandi_decision
+from engine.universe_engine import load_master_universe, search_universe, get_universe_stats
 
 
 st.set_page_config(

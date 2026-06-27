@@ -546,6 +546,48 @@ def nandi_decision_engine_page() -> None:
 
     st.info("Research support only. Not guaranteed profit or financial advice.")
 
+def tradingview_page() -> None:
+    page_title("TradingView Live Chart", "Live chart view for NIFTY, BANKNIFTY, SENSEX, commodities, and stocks.")
+
+    symbol_map = {
+        "NIFTY 50": "NSE:NIFTY",
+        "BANK NIFTY": "NSE:BANKNIFTY",
+        "FINNIFTY": "NSE:CNXFINANCE",
+        "SENSEX": "BSE:SENSEX",
+        "RELIANCE": "NSE:RELIANCE",
+        "HDFC BANK": "NSE:HDFCBANK",
+        "INFOSYS": "NSE:INFY",
+        "CRUDE OIL": "MCX:CRUDEOIL1!",
+        "NATURAL GAS": "MCX:NATURALGAS1!",
+        "GOLD": "MCX:GOLD1!",
+    }
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        selected = st.selectbox("Select Market", list(symbol_map.keys()))
+
+    with col2:
+        interval = st.selectbox(
+            "Timeframe",
+            ["1", "3", "5", "15", "30", "60", "D"],
+            index=3,
+        )
+
+    symbol = symbol_map[selected]
+
+    st.info("TradingView chart is for live visual analysis. Trade execution stays manual for now.")
+
+    tradingview_html = f"""
+    <iframe
+        src="https://www.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol={symbol}&interval={interval}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=light&style=1&timezone=Asia%2FKolkata&withdateranges=1&hideideas=1"
+        style="width:100%;height:720px;border:0;border-radius:18px;"
+        allowtransparency="true"
+        scrolling="no">
+    </iframe>
+    """
+
+    st.components.v1.html(tradingview_html, height=740)
 
 def settings() -> None:
     page_title("Settings", "Control Nandi OS preferences.")

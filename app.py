@@ -12,6 +12,7 @@ from engine.strategy_engine import rsi_24_78_signal
 from engine.risk_engine import risk_check
 from engine.nandi_brain import nandi_decision
 from engine.universe_engine import load_master_universe, search_universe, get_universe_stats
+from engine.scanner_engine import run_nandi_market_scan
 
 
 st.set_page_config(
@@ -103,6 +104,9 @@ if "watchlist" not in st.session_state:
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+
+if "latest_market_scan" not in st.session_state:
+    st.session_state.latest_market_scan = None
 
 
 def clean_text(value) -> str:
@@ -233,6 +237,7 @@ def sidebar() -> None:
         pages = [
             "Command Center",
             "Universe Engine",
+            "Nandi Market Scanner",
             "TradingView Live Chart",
             "Finance Research",
             "Nandi CEO",
@@ -256,6 +261,7 @@ def sidebar() -> None:
         st.write("Model Engine: Online")
         st.write("Data Feeds: Foundation Mode")
         st.write("Universe: Auto-Refresh")
+        st.write("Scanner: Ready")
         st.write("Memory: Active")
         st.write("Last Sync: 09:30 IST")
 
@@ -495,6 +501,142 @@ def universe_engine_page() -> None:
         components.iframe(chart_url, height=760, scrolling=False)
 
 
+def market_scanner_page() -> None:
+    page_title(
+        "Nandi Market Scanner",
+        "Scan Indian stocks using Nandi strategy logic and rank top opportunities.",
+    )
+
+    st.info(
+        "This scanner checks NSE stocks using daily candle data. "
+        "It is research support only, not guaranteed profit or financial advice."
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        max_symbols = st.selectbox(
+            "How many NSE stocks to scan?",
+            [50, 100, 250, 500],
+            index=2,
+        )
+
+    with c2:
+        top_n = st.selectbox(
+            "Show top results",
+            [5, 10, 15, 20],
+            index=1,
+        )
+
+    with c3:
+        period = st.selectbox(
+            "Data period",
+            ["3mo", "6mo", "1y"],
+            index=1,
+        )
+
+    st.warning(
+        "First scan can take time because Nandi is downloading candle data. "
+        "Start with 50 or 100 if Streamlit feels slow. Once stable, use 250 or 500."
+    )
+
+    if st.button("Run Nandi Market Scan", use_container_width=True):
+        with st.spinner("Nandi is scanning Indian stocks. Please wait..."):
+            report = run_nandi_market_scan(
+                max_symbols=int(max_symbols),
+                top_n=int(top_n),
+                period=period,
+            )
+
+        st.session_state.latest_market_scan = report
+
+        if report.empty:
+            st.error("No scan results found. Try fewer stocks or run again.")
+        else:
+            st.success("Market scan completed.")
+
+    report = st.session_state.latest_market_scan
+
+    if report is None:
+        st.divider()
+        st.write("Click **Run Nandi Market Scan** to generate your first Top 10 report.")
+        return
+
+    if report.empty:
+        st.warning("Latest scan did not return results.")
+        return
+
+    st.divider()
+    st.subheader("Top Nandi Opportunities")
+
+    show_cols = [
+        "symbol",
+        "name",
+        "close",
+        "rsi",
+        "volume_ratio",
+        "momentum20_pct",
+        "score",
+        "action",
+        "tradingview_symbol",
+        "scan_time",
+    ]
+
+    available_cols = [col for col in show_cols if col in report.columns]
+
+    st.dataframe(
+        report[available_cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
+
+    options = []
+
+    for idx, row in report.iterrows():
+        label = (
+            f"{row.get('symbol', '')} | "
+            f"Score: {row.get('score', '')} | "
+            f"Action: {row.get('action', '')} | "
+            f"{row.get('name', '')}"
+        )
+        options.append((label, idx))
+
+    if not options:
+        st.warning("No scan result selected.")
+        return
+
+    selected_label = st.selectbox(
+        "Select one result to view Nandi reasoning",
+        [item[0] for item in options],
+    )
+
+    selected_index = dict(options)[selected_label]
+    selected_row = report.loc[selected_index]
+
+    st.success(
+        f"Selected: {selected_row.get('symbol', '')} | "
+        f"Score: {selected_row.get('score', '')} | "
+        f"Action: {selected_row.get('action', '')}"
+    )
+
+    with st.container(border=True):
+        st.subheader("Nandi Reasoning")
+        st.write(selected_row.get("reason", "No reason available."))
+
+    tv_symbol = selected_row.get("tradingview_symbol", "")
+
+    if tv_symbol:
+        encoded_symbol = quote(str(tv_symbol), safe="")
+
+        st.link_button(
+            f"Open {tv_symbol} in free TradingView chart",
+            f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
+            use_container_width=True,
+        )
+
+
 def tradingview_page() -> None:
     page_title(
         "TradingView Live Chart",
@@ -672,6 +814,7 @@ def goals() -> None:
     st.checkbox("Add login", value=True)
     st.checkbox("Add Nandi Decision Engine", value=True)
     st.checkbox("Add Universe Engine", value=True)
+    st.checkbox("Add Market Scanner", value=True)
     st.checkbox("Add real market data")
     st.checkbox("Add option chain / OI logic")
     st.checkbox("Add AI chat and memory")
@@ -811,6 +954,7 @@ else:
     pages: Dict[str, Callable[[], None]] = {
         "Command Center": command_center,
         "Universe Engine": universe_engine_page,
+        "Nandi Market Scanner": market_scanner_page,
         "TradingView Live Chart": tradingview_page,
         "Finance Research": finance_research,
         "Nandi CEO": nandi_ceo,

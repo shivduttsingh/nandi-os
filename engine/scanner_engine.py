@@ -16,6 +16,10 @@ RSI_LENGTH = 14
 RSI_SOURCE = "Close"
 RSI_METHOD = "TradingView-style Wilder/RMA RSI"
 
+BUY_ZONE_RSI = 24
+BUY_WATCH_RSI = 35
+SELL_EXIT_RSI = 72
+
 FALLBACK_LIQUID_NSE_SYMBOLS = [
     "RELIANCE",
     "HDFCBANK",
@@ -301,73 +305,62 @@ def analyse_stock_with_rsi_strategy(
     score = 0
     reasons: List[str] = []
 
-    if rsi <= 24:
-        score += 35
-        reasons.append("TradingView-style RSI is near or below 24 buy-watch zone.")
-    elif 24 < rsi <= 35:
-        score += 25
-        reasons.append("TradingView-style RSI is recovering from lower zone.")
-    elif rsi >= 78:
-        score -= 35
-        reasons.append("TradingView-style RSI is near 78 exit/overbought zone.")
+    if rsi <= BUY_ZONE_RSI:
+        action = "BUY ZONE"
+        score = 90
+        reasons.append("RSI is at or below 24. This is the main buy zone.")
+    elif BUY_ZONE_RSI < rsi <= BUY_WATCH_RSI:
+        action = "BUY WATCH"
+        score = 75
+        reasons.append("RSI is between 24 and 35. This is a buy-watch recovery zone.")
+    elif BUY_WATCH_RSI < rsi < SELL_EXIT_RSI:
+        action = "WAIT"
+        score = 40
+        reasons.append("RSI is between 35 and 72. This is not a fresh buy zone.")
     else:
-        score += 5
-        reasons.append("TradingView-style RSI is neutral.")
-
-    if sma20 and close > sma20:
-        score += 15
-        reasons.append("Price is above 20-day average.")
-    else:
-        score -= 5
-        reasons.append("Price is below 20-day average.")
-
-    if sma50 and close > sma50:
-        score += 15
-        reasons.append("Price is above 50-day average.")
-    else:
-        score -= 5
-        reasons.append("Price is below 50-day average.")
-
-    if sma20 and sma50 and sma20 > sma50:
-        score += 10
-        reasons.append("Short-term trend is stronger than medium-term trend.")
-    else:
-        reasons.append("Short-term trend is not stronger than medium-term trend.")
+        action = "SELL / EXIT"
+        score = 5
+        reasons.append("RSI is at or above 72. This is sell/exit zone, not buy zone.")
 
     volume_ratio = 0
 
     if avg_volume and avg_volume > 0:
         volume_ratio = volume / avg_volume
 
-    if volume_ratio >= 1.5:
-        score += 15
-        reasons.append("Volume is strongly above 20-day average.")
-    elif volume_ratio >= 1.1:
-        score += 8
-        reasons.append("Volume is above average.")
-    else:
-        reasons.append("Volume confirmation is weak.")
+    if action in ["BUY ZONE", "BUY WATCH"]:
+        if sma20 and close > sma20:
+            score += 5
+            reasons.append("Price is above 20-day average.")
+        else:
+            reasons.append("Price is below 20-day average.")
 
-    if momentum20 > 5:
-        score += 15
-        reasons.append("20-day momentum is positive.")
-    elif momentum20 > 0:
-        score += 8
-        reasons.append("20-day momentum is mildly positive.")
+        if sma50 and close > sma50:
+            score += 5
+            reasons.append("Price is above 50-day average.")
+        else:
+            reasons.append("Price is below 50-day average.")
+
+        if volume_ratio >= 1.5:
+            score += 5
+            reasons.append("Volume is strongly above 20-day average.")
+        elif volume_ratio >= 1.1:
+            score += 3
+            reasons.append("Volume is above average.")
+        else:
+            reasons.append("Volume confirmation is weak.")
+
+        if momentum20 > 0:
+            score += 5
+            reasons.append("20-day momentum is positive.")
+        else:
+            reasons.append("20-day momentum is not positive yet.")
     else:
-        score -= 8
-        reasons.append("20-day momentum is negative.")
+        if action == "WAIT":
+            reasons.append("Nandi will wait until RSI comes closer to the buy zone.")
+        elif action == "SELL / EXIT":
+            reasons.append("Nandi will avoid buy because RSI is already high.")
 
     score = max(0, min(100, int(score)))
-
-    if score >= 75:
-        action = "TOP WATCH"
-    elif score >= 60:
-        action = "WATCH"
-    elif score >= 45:
-        action = "WAIT"
-    else:
-        action = "AVOID"
 
     return {
         "symbol": symbol,
@@ -377,6 +370,9 @@ def analyse_stock_with_rsi_strategy(
         "rsi_length": RSI_LENGTH,
         "rsi_source": RSI_SOURCE,
         "rsi_method": RSI_METHOD,
+        "buy_zone": f"RSI <= {BUY_ZONE_RSI}",
+        "buy_watch_zone": f"RSI {BUY_ZONE_RSI} to {BUY_WATCH_RSI}",
+        "sell_exit_zone": f"RSI >= {SELL_EXIT_RSI}",
         "sma20": round(sma20, 2),
         "sma50": round(sma50, 2),
         "volume_ratio": round(volume_ratio, 2),
@@ -457,10 +453,21 @@ def run_scan_for_universe(
 
     report = pd.DataFrame(results)
 
+    action_rank = {
+        "BUY ZONE": 1,
+        "BUY WATCH": 2,
+        "WAIT": 3,
+        "SELL / EXIT": 4,
+    }
+
+    report["action_rank"] = report["action"].map(action_rank).fillna(9)
+
     report = report.sort_values(
-        by=["score", "volume_ratio", "momentum20_pct"],
-        ascending=[False, False, False],
+        by=["action_rank", "score", "volume_ratio", "momentum20_pct"],
+        ascending=[True, False, False, False],
     )
+
+    report = report.drop(columns=["action_rank"])
 
     return report.head(top_n).reset_index(drop=True)
 

@@ -219,6 +219,7 @@ def sidebar() -> None:
 
         pages = [
             "Command Center",
+            "Universe Engine",
             "TradingView Live Chart",
             "Finance Research",
             "Nandi CEO",
@@ -606,9 +607,111 @@ def tradingview_page() -> None:
     """
 
     st.components.v1.html(tv_widget, height=780)
+def universe_engine_page() -> None:
+    from urllib.parse import quote
 
+    page_title(
+        "Universe Engine",
+        "Automatic Indian market universe: NSE, BSE, indices, and commodities."
+    )
+
+    stats = get_universe_stats()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Instruments", stats.get("total_instruments", 0))
+    c2.metric("NSE", stats.get("nse_count", 0))
+    c3.metric("BSE", stats.get("bse_count", 0))
+    c4.metric("MCX / Core", stats.get("mcx_count", 0))
+
+    st.caption(f"Last updated: {stats.get('last_updated', 'Not available')}")
+
+    if st.button("Refresh Indian Market Universe", use_container_width=True):
+        with st.spinner("Updating Indian stock universe..."):
+            load_master_universe(force_refresh=True)
+        st.success("Universe updated successfully.")
+        st.rerun()
+
+    st.divider()
+
+    search_text = st.text_input(
+        "Search Indian stock / index / commodity",
+        placeholder="Example: TATA, RELIANCE, SBIN, BANKNIFTY, CRUDEOIL"
+    )
+
+    results = search_universe(search_text, limit=200)
+
+    if results.empty:
+        st.warning("No result found. Try another symbol or company name.")
+        return
+
+    st.subheader("Search Results")
+    show_cols = [
+        "exchange",
+        "symbol",
+        "name",
+        "instrument_type",
+        "segment",
+        "tradingview_symbol",
+    ]
+
+    available_cols = [col for col in show_cols if col in results.columns]
+    st.dataframe(results[available_cols], use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    options = []
+    for idx, row in results.iterrows():
+        label = f"{row.get('exchange', '')} | {row.get('symbol', '')} | {row.get('name', '')} | {row.get('tradingview_symbol', '')}"
+        options.append((label, idx))
+
+    selected_label = st.selectbox(
+        "Select instrument for TradingView chart",
+        [item[0] for item in options],
+    )
+
+    selected_index = dict(options)[selected_label]
+    selected_row = results.loc[selected_index]
+
+    tv_symbol = selected_row["tradingview_symbol"]
+    encoded_symbol = quote(tv_symbol, safe="")
+
+    st.success(f"Selected: {tv_symbol}")
+
+    interval = st.selectbox(
+        "Timeframe",
+        ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
+        index=3,
+    )
+
+    chart_url = (
+        f"https://s.tradingview.com/widgetembed/"
+        f"?symbol={encoded_symbol}"
+        f"&interval={interval}"
+        f"&hidesidetoolbar=0"
+        f"&symboledit=1"
+        f"&saveimage=1"
+        f"&toolbarbg=F1F3F6"
+        f"&studies=[]"
+        f"&theme=light"
+        f"&style=1"
+        f"&timezone=Asia%2FKolkata"
+        f"&withdateranges=1"
+        f"&hideideas=1"
+        f"&locale=in"
+    )
+
+    st.components.v1.iframe(chart_url, height=760, scrolling=False)
+
+    st.link_button(
+        f"Open {tv_symbol} directly in TradingView",
+        f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
+        use_container_width=True,
+    )
 def settings() -> None:
-    page_title("Settings", "Control Nandi OS preferences.")
+
+    page_title(
+    "Settings", "Control Nandi OS preferences."
+    )
 
     st.text_input("Display Name", value=st.session_state.username)
     st.selectbox("Theme", ["Premium Mint", "Clean White", "Deep Green"])
@@ -623,6 +726,7 @@ else:
 
     pages: Dict[str, Callable[[], None]] = {
         "Command Center": command_center,
+        "Universe Engine": universe_engine_page,
         "TradingView Live Chart": tradingview_page,
         "Finance Research": finance_research,
         "Nandi CEO": nandi_ceo,

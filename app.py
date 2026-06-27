@@ -218,6 +218,7 @@ def sidebar() -> None:
 
         pages = [
             "Command Center",
+            "TradingView Live Chart",
             "Finance Research",
             "Nandi CEO",
             "Nandi Chat",

@@ -548,7 +548,7 @@ def nandi_decision_engine_page() -> None:
     st.info("Research support only. Not guaranteed profit or financial advice.")
 
 
-  def tradingview_page() -> None:
+def tradingview_page() -> None:
     page_title(
         "TradingView Live Chart",
         "Live chart view for NIFTY, BANKNIFTY, SENSEX, commodities, and stocks.",

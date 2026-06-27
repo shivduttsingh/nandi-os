@@ -607,12 +607,13 @@ def tradingview_page() -> None:
     """
 
     st.components.v1.html(tv_widget, height=780)
-def universe_engine_page() -> None:
+
+    def universe_engine_page() -> None:
     from urllib.parse import quote
 
     page_title(
         "Universe Engine",
-        "Automatic Indian market universe: NSE, BSE, indices, and commodities."
+        "Automatic Indian market universe with free TradingView chart access."
     )
 
     stats = get_universe_stats()
@@ -644,7 +645,15 @@ def universe_engine_page() -> None:
         st.warning("No result found. Try another symbol or company name.")
         return
 
+    results = results.copy()
+
+    if "tradingview_symbol" in results.columns:
+        results["exchange"] = results["exchange"].fillna(
+            results["tradingview_symbol"].astype(str).str.split(":").str[0]
+        )
+
     st.subheader("Search Results")
+
     show_cols = [
         "exchange",
         "symbol",
@@ -660,12 +669,18 @@ def universe_engine_page() -> None:
     st.divider()
 
     options = []
+
     for idx, row in results.iterrows():
-        label = f"{row.get('exchange', '')} | {row.get('symbol', '')} | {row.get('name', '')} | {row.get('tradingview_symbol', '')}"
+        exchange = row.get("exchange", "")
+        symbol = row.get("symbol", "")
+        name = row.get("name", "")
+        tv_symbol = row.get("tradingview_symbol", "")
+
+        label = f"{exchange} | {symbol} | {name} | {tv_symbol}"
         options.append((label, idx))
 
     selected_label = st.selectbox(
-        "Select instrument for TradingView chart",
+        "Select instrument",
         [item[0] for item in options],
     )
 
@@ -677,36 +692,51 @@ def universe_engine_page() -> None:
 
     st.success(f"Selected: {tv_symbol}")
 
-    interval = st.selectbox(
-        "Timeframe",
-        ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
-        index=3,
-    )
-
-    chart_url = (
-        f"https://s.tradingview.com/widgetembed/"
-        f"?symbol={encoded_symbol}"
-        f"&interval={interval}"
-        f"&hidesidetoolbar=0"
-        f"&symboledit=1"
-        f"&saveimage=1"
-        f"&toolbarbg=F1F3F6"
-        f"&studies=[]"
-        f"&theme=light"
-        f"&style=1"
-        f"&timezone=Asia%2FKolkata"
-        f"&withdateranges=1"
-        f"&hideideas=1"
-        f"&locale=in"
-    )
-
-    st.components.v1.iframe(chart_url, height=760, scrolling=False)
-
     st.link_button(
-        f"Open {tv_symbol} directly in TradingView",
+        f"Open {tv_symbol} in free TradingView chart",
         f"https://in.tradingview.com/chart/?symbol={encoded_symbol}",
         use_container_width=True,
     )
+
+    st.info(
+        "Main chart will open in TradingView free website. "
+        "This is more reliable because some Indian symbols are blocked inside embedded widgets."
+    )
+
+    st.divider()
+
+    show_embedded = st.checkbox(
+        "Try embedded chart inside Nandi OS",
+        value=False,
+        help="Some symbols may not load here because of TradingView widget restrictions."
+    )
+
+    if show_embedded:
+        interval = st.selectbox(
+            "Timeframe",
+            ["1", "3", "5", "15", "30", "60", "D", "W", "M"],
+            index=3,
+        )
+
+        chart_url = (
+            f"https://s.tradingview.com/widgetembed/"
+            f"?symbol={encoded_symbol}"
+            f"&interval={interval}"
+            f"&hidesidetoolbar=0"
+            f"&symboledit=1"
+            f"&saveimage=1"
+            f"&toolbarbg=F1F3F6"
+            f"&studies=[]"
+            f"&theme=light"
+            f"&style=1"
+            f"&timezone=Asia%2FKolkata"
+            f"&withdateranges=1"
+            f"&hideideas=1"
+            f"&locale=in"
+        )
+
+        st.components.v1.iframe(chart_url, height=760, scrolling=False)
+
 def settings() -> None:
 
     page_title(

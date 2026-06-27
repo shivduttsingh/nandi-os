@@ -1,382 +1,81 @@
+from datetime import datetime
+from typing import Dict, Callable
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
 from engine.market_engine import market_bias_engine
 from engine.strategy_engine import rsi_24_78_signal
 from engine.risk_engine import risk_check
 from engine.nandi_brain import nandi_decision
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from textwrap import dedent
 
 st.set_page_config(
     page_title="Nandi OS",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "Nandi OS - Private AI Finance Platform"}
 )
 
 APP_PASSWORD = "nandi123"
 
 
-def html(code):
-    st.markdown(dedent(code).strip(), unsafe_allow_html=True)
-
-
-BULL_LOGO = """
-<svg class="nandi-logo" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bullGreen" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#10d86f"/>
-      <stop offset="52%" stop-color="#07883f"/>
-      <stop offset="100%" stop-color="#034f28"/>
-    </linearGradient>
-  </defs>
-  <path d="M34 22 L62 58 L49 72 L12 34 Z" fill="url(#bullGreen)"/>
-  <path d="M126 22 L98 58 L111 72 L148 34 Z" fill="url(#bullGreen)"/>
-  <path d="M28 31 C10 27 7 13 7 5 C29 15 45 25 59 47 Z" fill="#07983f"/>
-  <path d="M132 31 C150 27 153 13 153 5 C131 15 115 25 101 47 Z" fill="#07983f"/>
-  <path d="M39 59 L80 30 L121 59 L109 113 L80 146 L51 113 Z" fill="url(#bullGreen)"/>
-  <path d="M55 67 L80 47 L105 67 L95 101 L80 120 L65 101 Z" fill="#045d2d" opacity="0.58"/>
-  <path d="M58 80 L72 86 L63 96 Z" fill="#eafff2"/>
-  <path d="M102 80 L88 86 L97 96 Z" fill="#eafff2"/>
-  <path d="M70 112 L80 129 L90 112 Z" fill="#02391d"/>
-</svg>
-"""
-
-CSS = """
-<style>
-    :root {
-        --green:#07883f;
-        --green2:#10b95d;
-        --mint:#eefaf2;
-        --line:#dfece4;
-        --text:#101820;
-        --muted:#65746c;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(circle at 7% 8%, rgba(16,216,111,.16), transparent 30%),
-            radial-gradient(circle at 92% 80%, rgba(7,136,63,.14), transparent 32%),
-            linear-gradient(135deg, #ffffff 0%, #f7fff9 48%, #eefaf2 100%);
-        color: var(--text);
-    }
-
-    .block-container {
-        padding-top: 1.25rem;
-        padding-bottom: 2rem;
-        max-width: 1480px;
-    }
-
-    header[data-testid="stHeader"] {
-        background: rgba(255,255,255,0);
-    }
-
-    section[data-testid="stSidebar"] {
-        background: rgba(255,255,255,.92);
-        border-right: 1px solid var(--line);
-    }
-
-    div.stButton > button,
-    div[data-testid="stFormSubmitButton"] > button {
-        width: 100%;
-        border-radius: 14px;
-        border: 1px solid #0a9348;
-        background: #07883f;
-        color: #fff;
-        font-weight: 850;
-        padding: .72rem 1rem;
-        transition: .18s ease;
-    }
-
-    div.stButton > button:hover,
-    div[data-testid="stFormSubmitButton"] > button:hover {
-        background: #056f34;
-        color: #fff;
-        border-color: #056f34;
-        transform: translateY(-1px);
-    }
-
-    .nandi-logo {
-        width: 82px;
-        height: 82px;
-        filter: drop-shadow(0 14px 24px rgba(0,120,55,.22));
-    }
-
-    .brand-box {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin-bottom: 20px;
-    }
-
-    .brand-title {
-        font-size: 25px;
-        font-weight: 950;
-        margin: 0;
-        letter-spacing: -.6px;
-    }
-
-    .brand-subtitle {
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.3;
-    }
-
-    .topline {
-        border-bottom: 1px solid var(--line);
-        padding-bottom: 22px;
-        margin-bottom: 30px;
-    }
-
-    .main-title {
-        font-size: 46px;
-        font-weight: 950;
-        letter-spacing: -1.6px;
-        margin: 0 0 6px;
-        color: var(--text);
-        line-height: 1.05;
-    }
-
-    .hero-title {
-        font-size: 42px;
-        line-height: 1.08;
-        font-weight: 950;
-        letter-spacing: -1.3px;
-        margin: 22px 0 0;
-    }
-
-    .hero-title span {
-        color: var(--green);
-    }
-
-    .subtitle,
-    .hero-copy {
-        color: var(--muted);
-        font-size: 16px;
-        line-height: 1.6;
-        margin: 12px 0 22px;
-    }
-
-    .hero-copy {
-        font-size: 17px;
-        max-width: 620px;
-    }
-
-    .pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 7px 13px;
-        border-radius: 999px;
-        background: #e7f8ee;
-        border: 1px solid #cdebd8;
-        color: #08783c;
-        font-size: 13px;
-        font-weight: 850;
-    }
-
-    .dot {
-        height: 8px;
-        width: 8px;
-        border-radius: 999px;
-        background: #0dae55;
-        display: inline-block;
-        box-shadow: 0 0 0 5px rgba(13,174,85,.12);
-    }
-
-    .card,
-    .mini-card {
-        background: rgba(255,255,255,.90);
-        border: 1px solid var(--line);
-        border-radius: 24px;
-        padding: 22px;
-        box-shadow: 0 12px 42px rgba(7,90,44,.08);
-        min-height: 215px;
-        overflow: hidden;
-    }
-
-    .mini-card {
-        border-radius: 20px;
-        padding: 16px;
-        min-height: auto;
-    }
-
-    .card-title {
-        font-size: 18px;
-        font-weight: 900;
-        color: #142017;
-        margin-bottom: 12px;
-    }
-
-    .muted {
-        color: var(--muted);
-        font-size: 13px;
-    }
-
-    .big-green {
-        color: var(--green);
-        font-size: 30px;
-        font-weight: 950;
-        letter-spacing: -.7px;
-    }
-
-    .green {
-        color: var(--green);
-        font-weight: 850;
-    }
-
-    .red {
-        color: #d93636;
-        font-weight: 850;
-    }
-
-    .orange {
-        color: #c68100;
-        font-weight: 850;
-    }
-
-    .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        font-size: 13px;
-        margin-top: 9px;
-        color: var(--muted);
-    }
-
-    .tag {
-        display: inline-block;
-        border-radius: 999px;
-        padding: 4px 10px;
-        font-size: 11px;
-        font-weight: 850;
-        background: #e6f8ed;
-        color: #08783c;
-    }
-
-    .tag-red {
-        background: #fff0f0;
-        color: #cf2e2e;
-    }
-
-    .tag-orange {
-        background: #fff7df;
-        color: #ad7400;
-    }
-
-    .progress-track {
-        height: 8px;
-        border-radius: 999px;
-        background: #e9eee9;
-        overflow: hidden;
-    }
-
-    .progress-fill {
-        height: 100%;
-        border-radius: 999px;
-        background: linear-gradient(90deg, #07983f, #10d86f);
-    }
-
-    .gauge {
-        width: 126px;
-        height: 126px;
-        border-radius: 50%;
-        background: conic-gradient(#07983f 0deg 266deg, #e8eee9 266deg 360deg);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin: auto;
-        box-shadow: inset 0 0 0 12px #f5fff8;
-    }
-
-    .gauge-inner {
-        width: 88px;
-        height: 88px;
-        border-radius: 50%;
-        background: #fff;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        border: 1px solid #dcefe4;
-    }
-
-    .gauge-number {
-        font-size: 31px;
-        font-weight: 950;
-        color: var(--green);
-        line-height: 1;
-    }
-
-    div[data-testid="stForm"] {
-        background: rgba(255,255,255,.92);
-        border: 1px solid var(--line);
-        border-radius: 30px;
-        padding: 35px;
-        box-shadow: 0 18px 60px rgba(7,90,44,.12);
-    }
-
-    .scenario {
-        border: 1px solid var(--line);
-        background: rgba(248,255,250,.92);
-        border-radius: 16px;
-        padding: 14px;
-        margin-bottom: 10px;
-    }
-
-    .nav-note {
-        background: rgba(255,255,255,.82);
-        border: 1px solid var(--line);
-        border-radius: 20px;
-        padding: 15px;
-        margin-top: 18px;
-        font-size: 13px;
-        color: #33443a;
-    }
-
-    .ticker-grid {
-        display: grid;
-        grid-template-columns: repeat(7, minmax(130px, 1fr));
-        gap: 12px;
-    }
-
-    .ticker-card {
-        background: rgba(255,255,255,.9);
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        padding: 14px;
-    }
-
-    .ticker-name {
-        font-size: 12px;
-        font-weight: 900;
-    }
-
-    .ticker-price {
-        font-size: 18px;
-        font-weight: 950;
-        color: var(--green);
-    }
-
-    @media(max-width:1100px) {
-        .ticker-grid {
-            grid-template-columns: repeat(2, 1fr);
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(19, 181, 90, 0.13), transparent 32%),
+                radial-gradient(circle at bottom right, rgba(4, 132, 65, 0.12), transparent 30%),
+                linear-gradient(135deg, #ffffff 0%, #f8fff9 45%, #eefaf2 100%);
         }
 
-        .main-title {
-            font-size: 34px;
+        header[data-testid="stHeader"] {
+            background: rgba(255,255,255,0);
         }
 
-        .hero-title {
-            font-size: 34px;
+        .block-container {
+            max-width: 1450px;
+            padding-top: 1.3rem;
+            padding-bottom: 2rem;
         }
-    }
-</style>
-"""
 
-html(CSS)
+        section[data-testid="stSidebar"] {
+            background: rgba(255, 255, 255, 0.94);
+            border-right: 1px solid #dfece4;
+        }
+
+        div[data-testid="stMetric"] {
+            background: rgba(255,255,255,0.84);
+            border: 1px solid #dfece4;
+            border-radius: 18px;
+            padding: 16px;
+            box-shadow: 0 8px 28px rgba(7, 90, 44, 0.06);
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: rgba(255,255,255,0.88);
+            border-radius: 22px;
+            box-shadow: 0 10px 34px rgba(7, 90, 44, 0.06);
+        }
+
+        div.stButton > button {
+            border-radius: 12px;
+            font-weight: 700;
+        }
+
+        div[data-testid="stFormSubmitButton"] > button {
+            border-radius: 12px;
+            background: #07883f;
+            color: white;
+            font-weight: 800;
+            border: 1px solid #07883f;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -398,200 +97,129 @@ if "watchlist" not in st.session_state:
         "CRUDE OIL",
     ]
 
-
-def rerun():
-    st.rerun()
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
 
 @st.cache_data
-def make_series(seed=10, points=80, start=24600):
+def make_series(seed: int = 10, points: int = 80, start: float = 24600) -> pd.Series:
     rng = np.random.default_rng(seed)
     trend = np.linspace(0, 260, points)
     noise = np.cumsum(rng.normal(0, 22, points))
-    return start + trend + noise
+    return pd.Series(start + trend + noise)
 
 
-def sparkline(values, color="#07983f", width=260, height=88):
-    values = np.array(values, dtype=float)
-    vmin, vmax = values.min(), values.max()
-    span = max(vmax - vmin, 1e-9)
-
-    xs = np.linspace(8, width - 8, len(values))
-    ys = height - 10 - ((values - vmin) / span) * (height - 20)
-
-    pts = " ".join([f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys)])
-
-    return f"""
-    <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg">
-        <polyline fill="none" stroke="{color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="{pts}"/>
-    </svg>
-    """
+def demo_market_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["NIFTY 50", "24,926.15", "+196.35", "+0.79%", "Bullish"],
+            ["BANK NIFTY", "55,215.80", "+412.10", "+0.75%", "Bullish"],
+            ["FINNIFTY", "26,102.45", "+218.95", "+0.85%", "Bullish"],
+            ["INDIA VIX", "13.24", "-0.28", "-2.07%", "Cooling"],
+            ["USD/INR", "83.46", "-0.08", "-0.10%", "Neutral"],
+            ["GOLD", "73,820", "+512", "+0.70%", "Bullish"],
+            ["CRUDE OIL", "64.15", "-0.18", "-0.28%", "Neutral"],
+        ],
+        columns=["Instrument", "Price", "Change", "% Change", "Status"],
+    )
 
 
-def candle_chart(values, width=620, height=255):
-    values = np.array(values[-34:], dtype=float)
-
-    rng = np.random.default_rng(7)
-    opens = values + rng.normal(0, 22, len(values))
-    highs = np.maximum(opens, values) + rng.uniform(12, 38, len(values))
-    lows = np.minimum(opens, values) - rng.uniform(12, 38, len(values))
-
-    pmin, pmax = lows.min(), highs.max()
-    span = max(pmax - pmin, 1e-9)
-
-    def y(price):
-        return height - 25 - ((price - pmin) / span) * (height - 45)
-
-    step = width / len(values)
-    candles = ""
-
-    for i in range(len(values)):
-        x = i * step + step / 2
-        yo = y(opens[i])
-        yc = y(values[i])
-        yh = y(highs[i])
-        yl = y(lows[i])
-
-        up = values[i] >= opens[i]
-        color = "#07983f" if up else "#e14646"
-        body_y = min(yo, yc)
-        body_h = max(abs(yo - yc), 4)
-
-        candles += f"""
-        <line x1="{x:.1f}" y1="{yh:.1f}" x2="{x:.1f}" y2="{yl:.1f}" stroke="{color}" stroke-width="2"/>
-        <rect x="{x-4:.1f}" y="{body_y:.1f}" width="8" height="{body_h:.1f}" rx="2" fill="{color}"/>
-        """
-
-    return f"""
-    <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg">
-        <rect x="0" y="0" width="{width}" height="{height}" rx="18" fill="#fbfffc"/>
-        <g opacity="0.65">
-            <line x1="0" y1="55" x2="{width}" y2="55" stroke="#e6eee9"/>
-            <line x1="0" y1="105" x2="{width}" y2="105" stroke="#e6eee9"/>
-            <line x1="0" y1="155" x2="{width}" y2="155" stroke="#e6eee9"/>
-            <line x1="0" y1="205" x2="{width}" y2="205" stroke="#e6eee9"/>
-        </g>
-        <rect x="270" y="132" width="250" height="52" rx="9" fill="#dbf5e5" opacity="0.85"/>
-        {candles}
-        <rect x="{width-98}" y="92" width="90" height="25" rx="6" fill="#07983f"/>
-        <text x="{width-53}" y="109" text-anchor="middle" fill="white" font-size="13" font-weight="800">24,926.15</text>
-        <text x="20" y="{height-10}" fill="#78867e" font-size="12">10:00</text>
-        <text x="230" y="{height-10}" fill="#78867e" font-size="12">12:00</text>
-        <text x="440" y="{height-10}" fill="#78867e" font-size="12">14:00</text>
-    </svg>
-    """
+def research_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["Primary", "Bullish", "Above 24,700", "25,200 - 25,500", "Valid above breakout zone"],
+            ["Alternate", "Neutral", "24,400 - 25,200", "Range bound", "Wait for range expansion"],
+            ["Risk", "Bearish", "Below 24,400", "24,000 - 23,800", "Avoid longs below support"],
+        ],
+        columns=["Scenario", "Bias", "Level", "Target", "Nandi Note"],
+    )
 
 
-def login_page():
-    prices = make_series()
+def backtest_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["NIFTY Breakout Study", "Backtest", "+1.34%", "78/100"],
+            ["Bank Nifty Call Study", "Backtest", "+0.92%", "72/100"],
+            ["Opening Range Momentum", "Journal", "+0.68%", "65/100"],
+            ["Midcap Rotation Scan", "Backtest", "-0.21%", "52/100"],
+            ["Global Cues Impact", "Journal", "+0.44%", "60/100"],
+        ],
+        columns=["Title", "Type", "Result", "Score"],
+    )
 
-    html(f"""
-    <div class="topline">
-        <div class="brand-box">
-            {BULL_LOGO}
-            <div>
-                <div class="brand-title">Nandi OS</div>
-                <div class="brand-subtitle">Private AI Finance Platform</div>
-            </div>
-            <div style="margin-left:auto;">
-                <span class="pill"><span class="dot"></span> All Systems Operational</span>
-            </div>
-        </div>
-    </div>
-    """)
 
-    left, right = st.columns([1.08, 1], gap="large")
+def page_title(title: str, subtitle: str = "") -> None:
+    st.title(title)
+    if subtitle:
+        st.caption(subtitle)
+
+
+def login_page() -> None:
+    st.title("Nandi OS")
+    st.caption("Private AI Finance Platform")
+
+    left, right = st.columns([1.18, 1], gap="large")
 
     with left:
-        html(f"""
-        <div class="hero-title">
-            AI-Powered Research.<br>
-            <span>Smarter Decisions.</span>
-        </div>
-        <div class="hero-copy">
-            Market intelligence, research notes, strategy testing, watchlist,
-            private memory, and daily planning inside one clean workspace.
-        </div>
+        st.header("AI-Powered Research.")
+        st.subheader("Smarter Decisions.")
+        st.write(
+            "A clean private workspace for market intelligence, strategy testing, "
+            "watchlist tracking, risk control, and Nandi decision support."
+        )
 
-        <div class="card">
-            <div class="card-title">
-                Market Pulse <span class="tag" style="float:right;">Live</span>
-            </div>
-            <div class="muted">NIFTY 50</div>
-            <div class="big-green">24,926.15</div>
-            <div class="green">+196.35 (+0.79%)</div>
-            {sparkline(prices[-55:])}
-            <div class="row">
-                <span>High 24,951.80</span>
-                <span>Low 24,684.10</span>
-                <span>Adv <b class="green">1,638</b></span>
-                <span>Dec <b class="red">742</b></span>
-            </div>
-        </div>
-        """)
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.container(border=True):
+                st.subheader("Market Pulse")
+                st.metric("NIFTY 50", "24,926.15", "+196.35 (+0.79%)")
+                st.line_chart(make_series(seed=1, points=45), height=190)
 
-        st.write("")
+        with c2:
+            with st.container(border=True):
+                st.subheader("Research Engine")
+                st.metric("Confidence", "74/100", "Active")
+                st.progress(0.74)
+                st.write("Bullish setups: 18")
+                st.write("Bearish setups: 6")
+                st.write("Neutral setups: 4")
 
-        html(f"""
-        <div class="card">
-            <div class="card-title">
-                Finance Research Preview <span class="tag" style="float:right;">NIFTY 15m</span>
-            </div>
-            {candle_chart(prices)}
-            <div class="row">
-                <span>Trend: <b class="green">Bullish</b></span>
-                <span>Momentum: <b class="green">Strong</b></span>
-                <span>Risk: <b class="orange">Medium</b></span>
-            </div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Finance Research Preview")
+            st.dataframe(research_table(), use_container_width=True, hide_index=True)
 
     with right:
-        html(f"""
-        <div style="text-align:center;margin-bottom:18px;">
-            {BULL_LOGO}
-            <h1 style="margin:6px 0 4px 0;font-size:34px;letter-spacing:-1px;">
-                Welcome back 👋
-            </h1>
-            <div class="muted">Sign in to access your private Nandi workspace</div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.header("Welcome back 👋")
+            st.write("Sign in to access your private Nandi workspace.")
 
-        with st.form("login"):
-            username = st.text_input("Email or Username", placeholder="Enter email or username")
-            password = st.text_input("Password", placeholder="Enter password", type="password")
-            st.checkbox("Remember me")
+            with st.form("login_form"):
+                username = st.text_input("Email or Username")
+                password = st.text_input("Password", type="password")
+                st.checkbox("Remember me")
+                submitted = st.form_submit_button("Sign In", use_container_width=True)
 
-            if st.form_submit_button("🔐 Sign In"):
+            if submitted:
                 if username.strip() and password == APP_PASSWORD:
                     st.session_state.logged_in = True
                     st.session_state.username = username.split("@")[0].title()
-                    rerun()
+                    st.rerun()
                 else:
                     st.error("Use password: nandi123")
 
-            html("""
-            <div style="text-align:center;color:#65746c;font-size:13px;margin-top:18px;">
-                🛡 Private Workspace | AI Research Mode | Secure Access
-            </div>
-            """)
+            st.info("Private Workspace | AI Research Mode | Secure Access")
 
 
-def sidebar():
+def sidebar() -> None:
     with st.sidebar:
-        html(f"""
-        <div class="brand-box">
-            {BULL_LOGO}
-            <div>
-                <div class="brand-title">Nandi OS</div>
-                <div class="brand-subtitle">Private AI<br>Finance Platform</div>
-            </div>
-        </div>
-        """)
+        st.title("Nandi OS")
+        st.caption("Private AI Finance Platform")
+        st.success("All Systems Active")
 
         pages = [
             "Command Center",
             "Finance Research",
+            "Nandi CEO",
             "Nandi Chat",
             "Memory Core",
             "Goals",
@@ -603,336 +231,208 @@ def sidebar():
         ]
 
         for page in pages:
-            if st.button(page):
+            if st.button(page, use_container_width=True):
                 st.session_state.page = page
-                rerun()
+                st.rerun()
 
-        html("""
-        <div class="nav-note">
-            <b>System Status</b><br><br>
-            <div class="row"><span>Model Engine</span><b class="green">Online</b></div>
-            <div class="row"><span>Data Feeds</span><b class="green">Live</b></div>
-            <div class="row"><span>Memory</span><b class="green">Active</b></div>
-            <div class="row"><span>Last sync</span><b>09:30 IST</b></div>
-        </div>
-        """)
+        st.divider()
+        st.write("System Status")
+        st.write("Model Engine: Online")
+        st.write("Data Feeds: Demo Mode")
+        st.write("Memory: Active")
+        st.write("Last Sync: 09:30 IST")
 
-        if st.button("Logout"):
+        st.divider()
+        if st.button("Logout", use_container_width=True):
             st.session_state.logged_in = False
-            rerun()
+            st.rerun()
 
 
-def command_center():
-    prices = make_series()
+def command_center() -> None:
+    st.text_input(
+        "Search",
+        placeholder="Search markets, research, tickers, strategies, or notes...",
+        label_visibility="collapsed",
+    )
 
-    top_left, top_right = st.columns([2.4, 1])
+    st.caption(f"Good morning, {st.session_state.username} 👋")
+    page_title(
+        "Financial Research Command Center",
+        "AI-powered research, strategy analysis, and market intelligence.",
+    )
 
-    with top_left:
-        st.text_input(
-            "Search",
-            placeholder="Search markets, research, tickers, or ideas...",
-            label_visibility="collapsed",
-        )
+    s1, s2, s3 = st.columns(3)
+    s1.success("All Systems Active")
+    s2.info(datetime.now().strftime("%d %b %Y · %I:%M %p IST"))
+    s3.warning("Data Mode: Demo / Foundation Build")
 
-    with top_right:
-        html(f"""
-        <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;">
-            <span class="pill">☀ Theme</span>
-            <span class="pill">🔔 3</span>
-            <span class="pill">👤 {st.session_state.username}</span>
-        </div>
-        """)
+    st.divider()
 
-    html(f"""
-    <div style="margin-top:22px;margin-bottom:22px;">
-        <div class="muted">Good morning, {st.session_state.username} 👋</div>
-        <div class="main-title">Financial Research Command Center</div>
-        <div class="subtitle">AI-powered research, strategy analysis, and market intelligence.</div>
-        <span class="pill"><span class="dot"></span> All Systems Active</span>
-        <span class="pill">📅 {datetime.now().strftime("%d %b %Y")} · {datetime.now().strftime("%I:%M %p")} IST</span>
-    </div>
-    """)
-
-    c1, c2, c3, c4 = st.columns(4, gap="large")
+    c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        html(f"""
-        <div class="card">
-            <div class="card-title">
-                Market Pulse <span class="tag" style="float:right;">Live</span>
-            </div>
-            <div class="muted">NIFTY 50</div>
-            <div class="big-green">24,926.15</div>
-            <div class="green">+196.35 (+0.79%)</div>
-            {sparkline(prices[-55:])}
-            <div class="row"><span>High</span><b>24,951.80</b></div>
-            <div class="row"><span>Low</span><b>24,684.10</b></div>
-            <div class="row"><span>Adv</span><b class="green">1,638</b></div>
-            <div class="row"><span>Dec</span><b class="red">742</b></div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Market Pulse")
+            st.metric("NIFTY 50", "24,926.15", "+196.35 (+0.79%)")
+            st.line_chart(make_series(seed=2, points=45), height=190)
+            st.write("High: 24,951.80")
+            st.write("Low: 24,684.10")
 
     with c2:
-        html("""
-        <div class="card">
-            <div class="card-title">
-                Research Engine <span class="tag" style="float:right;">Active</span>
-            </div>
-            <div class="gauge">
-                <div class="gauge-inner">
-                    <div class="gauge-number">74</div>
-                    <div class="muted">/100</div>
-                </div>
-            </div>
-            <div class="row"><span>Bullish Setups</span><b class="green">18</b></div>
-            <div class="row"><span>Bearish Setups</span><b class="red">6</b></div>
-            <div class="row"><span>Neutral</span><b>4</b></div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Research Engine")
+            st.metric("Confidence", "74/100", "Active")
+            st.progress(0.74)
+            st.write("Bullish setups: 18")
+            st.write("Bearish setups: 6")
+            st.write("Neutral: 4")
 
     with c3:
-        html("""
-        <div class="card">
-            <div class="card-title">
-                Memory Core <span class="tag" style="float:right;">Learning</span>
-            </div>
-            <div class="row"><span>Patterns Tracked</span><b>18,642</b></div>
-            <div class="row"><span>Scenarios Stored</span><b>1,248</b></div>
-            <div class="row"><span>Models Evolved</span><b>23</b></div>
-            <div class="row"><span>Active Memory</span><b class="green">98.7%</b></div>
-            <br>
-            <div class="progress-track">
-                <div class="progress-fill" style="width:98%;"></div>
-            </div>
-            <br>
-            <div class="muted">Last update: 09:28 AM IST</div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Memory Core")
+            st.metric("Active Memory", "98.7%", "+0.4%")
+            st.write("Patterns tracked: 18,642")
+            st.write("Scenarios stored: 1,248")
+            st.write("Models evolved: 23")
+            st.progress(0.987)
 
     with c4:
-        html("""
-        <div class="card">
-            <div class="card-title">
-                Today's Focus <span class="tag" style="float:right;">60%</span>
-            </div>
-            <div class="row"><span>✅ NIFTY Structure Analysis</span></div>
-            <div class="row"><span>✅ Bank Nifty Scenario Study</span></div>
-            <div class="row"><span>✅ Global Market Correlation</span></div>
-            <div class="row"><span>○ Sector Rotation Scan</span></div>
-            <div class="row"><span>○ Research Watchlist</span></div>
-            <br>
-            <div class="progress-track">
-                <div class="progress-fill" style="width:60%;"></div>
-            </div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Today's Focus")
+            st.checkbox("NIFTY Structure Analysis", value=True)
+            st.checkbox("Bank Nifty Scenario Study", value=True)
+            st.checkbox("Global Market Correlation", value=True)
+            st.checkbox("Sector Rotation Scan")
+            st.checkbox("Research Watchlist")
+            st.progress(0.60)
 
-    st.write("")
+    st.divider()
 
     left, right = st.columns([1.25, 1], gap="large")
 
     with left:
-        html(f"""
-        <div class="card">
-            <div class="card-title">
-                Finance Research Panel
-                <span class="tag" style="float:right;">NIFTY 50 · 15m</span>
-            </div>
-
-            <div style="display:grid;grid-template-columns:210px 1fr;gap:16px;">
-                <div>
-                    <div class="scenario">
-                        <b>Primary Scenario</b> <span class="tag">Bullish</span><br>
-                        <span class="muted">Continuation above 24,700</span><br>
-                        <b>Target 25,200 – 25,500</b>
-                    </div>
-                    <div class="scenario">
-                        <b>Alternate Scenario</b> <span class="tag tag-orange">Neutral</span><br>
-                        <span class="muted">Range bound 24,400 – 25,200</span>
-                    </div>
-                    <div class="scenario">
-                        <b>Risk Scenario</b> <span class="tag tag-red">Bearish</span><br>
-                        <span class="muted">Breakdown below 24,400</span><br>
-                        <b>Target 24,000 – 23,800</b>
-                    </div>
-                </div>
-
-                <div>
-                    {candle_chart(prices)}
-                </div>
-            </div>
-
-            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">
-                <span class="pill">Trend: Bullish</span>
-                <span class="pill">Momentum: Strong</span>
-                <span class="pill">Volume: Above Avg</span>
-                <span class="pill">Risk: Medium</span>
-            </div>
-        </div>
-        """)
+        with st.container(border=True):
+            st.subheader("Finance Research Panel")
+            st.dataframe(research_table(), use_container_width=True, hide_index=True)
+            st.line_chart(make_series(seed=7, points=75), height=260)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.success("Trend: Bullish")
+            m2.success("Momentum: Strong")
+            m3.warning("Risk: Medium")
+            m4.info("Volume: Above Avg")
 
     with right:
-        html("""
-        <div class="card">
-            <div class="card-title">
-                Paper Journal / Backtests <span class="tag" style="float:right;">View All</span>
-            </div>
+        with st.container(border=True):
+            st.subheader("Paper Journal / Backtests")
+            st.dataframe(backtest_table(), use_container_width=True, hide_index=True)
 
-            <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <tr>
-                    <th align="left">Title</th>
-                    <th align="left">Type</th>
-                    <th align="left">Result</th>
-                    <th align="left">Score</th>
-                </tr>
-                <tr>
-                    <td>NIFTY Breakout Study</td>
-                    <td>Backtest</td>
-                    <td class="green">+1.34%</td>
-                    <td><span class="tag">78/100</span></td>
-                </tr>
-                <tr>
-                    <td>Bank Nifty Call Study</td>
-                    <td>Backtest</td>
-                    <td class="green">+0.92%</td>
-                    <td><span class="tag">72/100</span></td>
-                </tr>
-                <tr>
-                    <td>Opening Range Momentum</td>
-                    <td>Journal</td>
-                    <td class="green">+0.68%</td>
-                    <td><span class="tag">65/100</span></td>
-                </tr>
-                <tr>
-                    <td>Midcap Rotation Scan</td>
-                    <td>Backtest</td>
-                    <td class="red">-0.21%</td>
-                    <td><span class="tag tag-red">52/100</span></td>
-                </tr>
-                <tr>
-                    <td>Global Cues Impact</td>
-                    <td>Journal</td>
-                    <td class="green">+0.44%</td>
-                    <td><span class="tag">60/100</span></td>
-                </tr>
-            </table>
-        </div>
-        """)
+    st.divider()
 
-    st.write("")
-
-    tickers = [
-        ("NIFTY 50", "24,926.15", "+196.35 (+0.79%)", "#07983f", 1),
-        ("BANK NIFTY", "55,215.80", "+412.10 (+0.75%)", "#07983f", 2),
-        ("FINNIFTY", "26,102.45", "+218.95 (+0.85%)", "#07983f", 3),
-        ("INDIA VIX", "13.24", "-0.28 (-2.07%)", "#e14646", 4),
-        ("USD/INR", "83.46", "-0.08 (-0.10%)", "#e14646", 5),
-        ("GOLD", "73,820", "+512 (+0.70%)", "#07983f", 6),
-        ("CRUDE OIL", "64.15", "-0.18 (-0.28%)", "#e14646", 7),
-    ]
-
-    ticker_html = """
-    <div class="mini-card">
-        <div class="card-title">
-            Market Watch <span class="tag" style="float:right;">Customize</span>
-        </div>
-        <div class="ticker-grid">
-    """
-
-    for name, price, move, color, seed in tickers:
-        move_class = "green" if "+" in move else "red"
-        ticker_html += f"""
-        <div class="ticker-card">
-            <div class="ticker-name">{name}</div>
-            <div class="ticker-price" style="color:{color};">{price}</div>
-            <div class="{move_class}" style="font-size:12px;">{move}</div>
-            {sparkline(make_series(seed=seed, points=28, start=100), color=color, width=140, height=45)}
-        </div>
-        """
-
-    ticker_html += """
-        </div>
-    </div>
-    """
-
-    html(ticker_html)
+    with st.container(border=True):
+        st.subheader("Market Watch")
+        st.dataframe(demo_market_table(), use_container_width=True, hide_index=True)
 
 
-def simple_page(title, subtitle):
-    html(f"""
-    <div class="main-title">{title}</div>
-    <div class="subtitle">{subtitle}</div>
-    """)
+def finance_research() -> None:
+    page_title("Finance Research", "Scenario planning, market structure, and research notes.")
+
+    left, right = st.columns([1, 1], gap="large")
+
+    with left:
+        with st.container(border=True):
+            st.subheader("Research Setup")
+            st.dataframe(research_table(), use_container_width=True, hide_index=True)
+
+    with right:
+        with st.container(border=True):
+            st.subheader("Research Output")
+            st.metric("Nandi Setup", "Bullish", "74/100 confidence")
+            st.progress(0.74)
+            st.info("Research output only. Not guaranteed profit or financial advice.")
 
 
-def finance_research():
-    simple_page("Finance Research", "Scenario planning, market structure, and research notes.")
-
-    c1, c2 = st.columns(2, gap="large")
-
-    with c1:
-        html("""
-        <div class="card">
-            <div class="card-title">Research Setup</div>
-            <div class="scenario"><b>NIFTY:</b> Bullish above 24,700. Risk below 24,400.</div>
-            <div class="scenario"><b>BANK NIFTY:</b> Watch call-side buildup and first 15-minute range.</div>
-            <div class="scenario"><b>Global Cues:</b> Track US futures, DXY, crude, gold, and VIX.</div>
-        </div>
-        """)
-
-    with c2:
-        html("""
-        <div class="card">
-            <div class="card-title">Research Output</div>
-            <span class="pill">Bullish Setup Detected</span><br><br>
-            <div class="muted">Confidence Score</div>
-            <div class="big-green">74 / 100</div>
-            <div class="progress-track">
-                <div class="progress-fill" style="width:74%;"></div>
-            </div>
-            <br>
-            <div class="muted">Research output only. Not financial advice.</div>
-        </div>
-        """)
-
-
-def nandi_chat():
-    simple_page("Nandi Chat", "Private AI chat area. Full AI API connection will be added after UI is stable.")
-
-    message = st.chat_input("Ask Nandi...")
-
-    if message:
-        with st.chat_message("user"):
-            st.write(message)
-
-        with st.chat_message("assistant"):
-            st.write("Nandi is ready. Next we will connect real AI model, memory, and market tools.")
-
-
-def memory_core():
-    simple_page("Memory Core", "Pattern memory, scenario storage, and learning status.")
+def nandi_ceo() -> None:
+    page_title(
+        "Nandi CEO",
+        "Nandi coordinates specialist engines and gives final decision support.",
+    )
 
     c1, c2, c3 = st.columns(3)
 
+    with c1:
+        with st.container(border=True):
+            st.subheader("Market AI")
+            st.metric("Bias", "Bullish", "87%")
+            st.write("Trend, levels, volume, and momentum are supportive.")
+
+    with c2:
+        with st.container(border=True):
+            st.subheader("Strategy AI")
+            st.metric("Status", "Confirmed", "RSI/Breakout aligned")
+            st.write("Current setup is passing base strategy checks.")
+
+    with c3:
+        with st.container(border=True):
+            st.subheader("Risk AI")
+            st.metric("Risk", "Medium", "Controlled")
+            st.write("Trade allowed only with fixed stop loss.")
+
+    st.divider()
+
+    with st.container(border=True):
+        st.subheader("CEO Summary")
+        st.write("Nandi has received inputs from Market AI, Strategy AI, and Risk AI.")
+        st.success("Final stance: WAIT FOR CONFIRMATION")
+        st.info("Nandi will not approve forced trades when risk and confirmation are not aligned.")
+
+
+def nandi_chat() -> None:
+    page_title("Nandi Chat", "Private AI chat area. Full AI API connection will be added later.")
+
+    for role, message in st.session_state.chat_history:
+        with st.chat_message(role):
+            st.write(message)
+
+    prompt = st.chat_input("Ask Nandi...")
+    if prompt:
+        st.session_state.chat_history.append(("user", prompt))
+        st.session_state.chat_history.append(
+            (
+                "assistant",
+                "Nandi is ready. Next phase will connect real AI model, memory, market data, and tools.",
+            )
+        )
+        st.rerun()
+
+
+def memory_core() -> None:
+    page_title("Memory Core", "Pattern memory, scenario storage, and learning status.")
+
+    c1, c2, c3 = st.columns(3)
     c1.metric("Patterns Tracked", "18,642", "+214")
     c2.metric("Scenarios Stored", "1,248", "+31")
     c3.metric("Active Memory", "98.7%", "+0.4%")
 
     st.progress(0.987)
 
+    with st.container(border=True):
+        st.subheader("Memory Notes")
+        st.write("This page will later connect to local memory / database for Nandi.")
 
-def goals():
-    simple_page("Goals", "Track your capital growth and Nandi build roadmap.")
 
-    st.checkbox("Build Nandi OS fresh UI")
-    st.checkbox("Add login")
+def goals() -> None:
+    page_title("Goals", "Track your capital growth and Nandi build roadmap.")
+
+    st.checkbox("Build Nandi OS clean UI", value=True)
+    st.checkbox("Add login", value=True)
+    st.checkbox("Add Nandi Decision Engine", value=True)
     st.checkbox("Add real market data")
     st.checkbox("Add option chain / OI logic")
     st.checkbox("Add AI chat and memory")
 
 
-def daily_updates():
-    simple_page("Daily Updates", "Morning checklist and market preparation.")
+def daily_updates() -> None:
+    page_title("Daily Updates", "Morning checklist and market preparation.")
 
     items = [
         "Check global market sentiment",
@@ -950,63 +450,60 @@ def daily_updates():
     st.text_area("Today’s notes")
 
 
-def strategy_lab():
-    simple_page("Strategy Lab", "Upload CSV and test RSI 24/78 setup.")
+def strategy_lab() -> None:
+    page_title("Strategy Lab", "Upload CSV and test RSI 24/78 setup.")
 
     uploaded = st.file_uploader("Upload CSV with Close column", type=["csv"])
 
-    if uploaded:
-        df = pd.read_csv(uploaded)
-
-        if "Close" not in df.columns:
-            st.error("CSV must contain Close column.")
-            return
-
-        result = rsi_24_78_signal(df)
-
-        delta = df["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-
-        rs = avg_gain / avg_loss
-        df["RSI"] = 100 - (100 / (1 + rs))
-
-        df["Signal"] = "Hold"
-        df.loc[df["RSI"] <= 24, "Signal"] = "Buy Zone"
-        df.loc[df["RSI"] >= 78, "Signal"] = "Exit Zone"
-
-        st.metric("Latest Strategy Signal", result.get("signal", "No Signal"))
-        st.write(result.get("reason", ""))
-
-        st.dataframe(df.tail(80), use_container_width=True)
-        st.line_chart(df[["Close", "RSI"]])
-    else:
+    if not uploaded:
         st.info("Upload your CSV file to test the strategy.")
+        return
+
+    df = pd.read_csv(uploaded)
+
+    if "Close" not in df.columns:
+        st.error("CSV must contain a Close column.")
+        return
+
+    result = rsi_24_78_signal(df)
+
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    df["Signal"] = "Hold"
+    df.loc[df["RSI"] <= 24, "Signal"] = "Buy Zone"
+    df.loc[df["RSI"] >= 78, "Signal"] = "Exit Zone"
+
+    st.metric("Latest Strategy Signal", result.get("signal", "No Signal"))
+    st.write(result.get("reason", ""))
+
+    st.dataframe(df.tail(80), use_container_width=True)
+    st.line_chart(df[["Close", "RSI"]])
 
 
-def watchlist():
-    simple_page("Watchlist", "Manage your personal market watchlist.")
+def watchlist() -> None:
+    page_title("Watchlist", "Manage your personal market watchlist.")
 
     new_symbol = st.text_input("Add symbol", placeholder="Example: TCS, SBIN, NIFTY")
 
     if st.button("Add to Watchlist") and new_symbol.strip():
         st.session_state.watchlist.append(new_symbol.strip().upper())
-        rerun()
+        st.rerun()
 
-    for symbol in st.session_state.watchlist:
-        html(f"""
-        <div class="mini-card" style="margin-bottom:10px;">
-            <b>☆ {symbol}</b>
-            <span style="float:right;" class="green">Active</span>
-        </div>
-        """)
+    watch_df = pd.DataFrame({"Symbol": st.session_state.watchlist})
+    st.dataframe(watch_df, use_container_width=True, hide_index=True)
 
 
-def nandi_decision_engine_page():
-    simple_page("Nandi Decision Engine", "Market bias + strategy signal + risk check = final Nandi action.")
+def nandi_decision_engine_page() -> None:
+    page_title(
+        "Nandi Decision Engine",
+        "Market bias + strategy signal + risk check = final Nandi action.",
+    )
 
     col1, col2, col3 = st.columns(3)
 
@@ -1030,9 +527,10 @@ def nandi_decision_engine_page():
     final = nandi_decision(
         market["bias"],
         strategy_signal,
-        risk["status"]
+        risk["status"],
     )
 
+    st.divider()
     st.subheader("Final Nandi Decision")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1041,15 +539,16 @@ def nandi_decision_engine_page():
     c3.metric("Market Bias", market["bias"])
     c4.metric("Risk Status", risk["status"])
 
-    st.write("### Reasons")
-    for reason in final["reasons"]:
-        st.write(f"✅ {reason}")
+    with st.container(border=True):
+        st.subheader("Reasoning")
+        for reason in final["reasons"]:
+            st.write(f"✅ {reason}")
 
     st.info("Research support only. Not guaranteed profit or financial advice.")
 
 
-def settings():
-    simple_page("Settings", "Control Nandi OS preferences.")
+def settings() -> None:
+    page_title("Settings", "Control Nandi OS preferences.")
 
     st.text_input("Display Name", value=st.session_state.username)
     st.selectbox("Theme", ["Premium Mint", "Clean White", "Deep Green"])
@@ -1062,9 +561,10 @@ if not st.session_state.logged_in:
 else:
     sidebar()
 
-    pages = {
+    pages: Dict[str, Callable[[], None]] = {
         "Command Center": command_center,
         "Finance Research": finance_research,
+        "Nandi CEO": nandi_ceo,
         "Nandi Chat": nandi_chat,
         "Memory Core": memory_core,
         "Goals": goals,

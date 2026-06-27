@@ -17,6 +17,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+APP_USERNAME = st.secrets["auth"]["username"]
+APP_PASSWORD = st.secrets["auth"]["password"]
 
 st.markdown(
     """
@@ -82,7 +84,7 @@ if "page" not in st.session_state:
     st.session_state.page = "Command Center"
 
 if "username" not in st.session_state:
-    st.session_state.username = "Shivdutt"
+    st.session_state.username = "Shiv"
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = [

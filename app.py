@@ -600,15 +600,18 @@ def sidebar():
         )
 
         pages = [
-            "Command Center",
-            "Finance Research",
-            "Nandi Chat",
-            "Memory Core",
-            "Goals",
-            "Daily Updates",
-            "Strategy Lab",
-            "Watchlist",
-            "Settings",
+
+    "Command Center",
+    "Finance Research",
+    "Nandi Chat",
+    "Memory Core",
+    "Goals",
+    "Daily Updates",
+    "Strategy Lab",
+    "Watchlist",
+    "Nandi Decision Engine",
+    "Settings",
+
         ]
 
         for page in pages:

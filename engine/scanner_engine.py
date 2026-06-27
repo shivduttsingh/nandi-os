@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
+import yfinance as yf
 
 from engine.market_data_engine import (
     download_daily_data_for_symbols,
@@ -14,6 +15,103 @@ from engine.market_data_engine import (
 RSI_LENGTH = 14
 RSI_SOURCE = "Close"
 RSI_METHOD = "TradingView-style Wilder/RMA RSI"
+
+FALLBACK_LIQUID_NSE_SYMBOLS = [
+    "RELIANCE",
+    "HDFCBANK",
+    "ICICIBANK",
+    "INFY",
+    "TCS",
+    "SBIN",
+    "AXISBANK",
+    "KOTAKBANK",
+    "LT",
+    "BHARTIARTL",
+    "ITC",
+    "HINDUNILVR",
+    "BAJFINANCE",
+    "HCLTECH",
+    "SUNPHARMA",
+    "MARUTI",
+    "TITAN",
+    "ULTRACEMCO",
+    "NTPC",
+    "POWERGRID",
+    "ONGC",
+    "ADANIENT",
+    "ADANIPORTS",
+    "TATASTEEL",
+    "JSWSTEEL",
+    "COALINDIA",
+    "WIPRO",
+    "TECHM",
+    "M&M",
+    "BAJAJFINSV",
+    "HDFCLIFE",
+    "SBILIFE",
+    "HEROMOTOCO",
+    "EICHERMOT",
+    "DRREDDY",
+    "CIPLA",
+    "DIVISLAB",
+    "GRASIM",
+    "BPCL",
+    "IOC",
+    "HINDALCO",
+    "APOLLOHOSP",
+    "BRITANNIA",
+    "NESTLEIND",
+    "ASIANPAINT",
+    "TATAMOTORS",
+    "INDUSINDBK",
+    "BAJAJ-AUTO",
+    "SHRIRAMFIN",
+    "UPL",
+]
+
+
+def clean_text(value) -> str:
+    if pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+
+    if text.lower() in ["nan", "none", "nat"]:
+        return ""
+
+    return text
+
+
+def to_yahoo_symbol(symbol: str) -> str:
+    symbol = clean_text(symbol).upper()
+
+    if symbol.endswith(".NS"):
+        return symbol
+
+    return f"{symbol}.NS"
+
+
+def build_fallback_universe(limit: Optional[int] = None) -> pd.DataFrame:
+    symbols = FALLBACK_LIQUID_NSE_SYMBOLS.copy()
+
+    if limit:
+        symbols = symbols[: int(limit)]
+
+    rows = []
+
+    for symbol in symbols:
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": symbol,
+                "exchange": "NSE",
+                "instrument_type": "stock",
+                "segment": "equity",
+                "tradingview_symbol": f"NSE:{symbol}",
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def calculate_rma(series: pd.Series, period: int = 14) -> pd.Series:
@@ -61,19 +159,112 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
+def clean_downloaded_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    data = df.copy()
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [str(col[-1]) for col in data.columns]
+
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+
+    for col in required_cols:
+        if col not in data.columns:
+            data[col] = pd.NA
+
+    data = data[required_cols].copy()
+
+    for col in required_cols:
+        data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    data = data.dropna(subset=["Close"])
+
+    return data
+
+
+def direct_download_daily_data(
+    symbols: List[str],
+    period: str = "6mo",
+    interval: str = "1d",
+    chunk_size: int = 25,
+) -> Dict[str, pd.DataFrame]:
+    output: Dict[str, pd.DataFrame] = {}
+
+    clean_symbols = []
+
+    for symbol in symbols:
+        symbol = clean_text(symbol).upper()
+
+        if symbol and symbol not in clean_symbols:
+            clean_symbols.append(symbol)
+
+    if not clean_symbols:
+        return output
+
+    for start in range(0, len(clean_symbols), chunk_size):
+        batch_symbols = clean_symbols[start : start + chunk_size]
+        yahoo_symbols = [to_yahoo_symbol(symbol) for symbol in batch_symbols]
+
+        try:
+            raw = yf.download(
+                tickers=yahoo_symbols,
+                period=period,
+                interval=interval,
+                group_by="ticker",
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+            )
+        except Exception:
+            continue
+
+        if raw is None or raw.empty:
+            continue
+
+        for original_symbol, yahoo_symbol in zip(batch_symbols, yahoo_symbols):
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    available = list(raw.columns.get_level_values(0).unique())
+
+                    if yahoo_symbol not in available:
+                        continue
+
+                    df = raw[yahoo_symbol].copy()
+                else:
+                    df = raw.copy()
+
+                df = clean_downloaded_df(df)
+
+                if df.empty:
+                    continue
+
+                output[original_symbol] = df
+
+            except Exception:
+                continue
+
+    return output
+
+
 def analyse_stock_with_rsi_strategy(
     symbol: str,
     name: str,
     df: pd.DataFrame,
 ) -> Dict:
-    data = df.copy()
+    data = clean_downloaded_df(df)
 
-    data["Close"] = pd.to_numeric(data["Close"], errors="coerce")
-    data["Volume"] = pd.to_numeric(data["Volume"], errors="coerce")
+    if data.empty:
+        return {
+            "symbol": symbol,
+            "name": name,
+            "score": 0,
+            "action": "SKIP",
+            "reason": "No candle data available.",
+        }
 
-    data = data.dropna(subset=["Close"])
-
-    if len(data) < 80:
+    if len(data) < 55:
         return {
             "symbol": symbol,
             "name": name,
@@ -90,13 +281,22 @@ def analyse_stock_with_rsi_strategy(
 
     latest = data.iloc[-1]
 
-    close = float(latest["Close"])
+    close = float(latest["Close"]) if pd.notna(latest["Close"]) else 0
     rsi = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 0
     sma20 = float(latest["SMA20"]) if pd.notna(latest["SMA20"]) else 0
     sma50 = float(latest["SMA50"]) if pd.notna(latest["SMA50"]) else 0
     volume = float(latest["Volume"]) if pd.notna(latest["Volume"]) else 0
     avg_volume = float(latest["AVG_VOLUME20"]) if pd.notna(latest["AVG_VOLUME20"]) else 0
     momentum20 = float(latest["MOMENTUM20"]) if pd.notna(latest["MOMENTUM20"]) else 0
+
+    if rsi <= 0:
+        return {
+            "symbol": symbol,
+            "name": name,
+            "score": 0,
+            "action": "SKIP",
+            "reason": "RSI not available.",
+        }
 
     score = 0
     reasons: List[str] = []
@@ -131,6 +331,8 @@ def analyse_stock_with_rsi_strategy(
     if sma20 and sma50 and sma20 > sma50:
         score += 10
         reasons.append("Short-term trend is stronger than medium-term trend.")
+    else:
+        reasons.append("Short-term trend is not stronger than medium-term trend.")
 
     volume_ratio = 0
 
@@ -187,17 +389,32 @@ def analyse_stock_with_rsi_strategy(
     }
 
 
-def run_nandi_market_scan(
-    max_symbols: int = 250,
+def run_scan_for_universe(
+    universe: pd.DataFrame,
     top_n: int = 10,
     period: str = "6mo",
 ) -> pd.DataFrame:
-    universe = get_nse_stock_universe(limit=max_symbols)
-
-    if universe.empty:
+    if universe is None or universe.empty:
         return pd.DataFrame()
 
+    universe = universe.copy()
+
+    if "symbol" not in universe.columns:
+        return pd.DataFrame()
+
+    if "name" not in universe.columns:
+        universe["name"] = universe["symbol"]
+
+    universe["symbol"] = universe["symbol"].apply(clean_text).str.upper()
+    universe["name"] = universe["name"].apply(clean_text)
+
+    universe = universe[universe["symbol"].str.len() > 0]
+    universe = universe.drop_duplicates(subset=["symbol"], keep="first")
+
     symbols = universe["symbol"].astype(str).str.upper().tolist()
+
+    if not symbols:
+        return pd.DataFrame()
 
     data_map = download_daily_data_for_symbols(
         symbols=symbols,
@@ -206,11 +423,22 @@ def run_nandi_market_scan(
         chunk_size=25,
     )
 
+    if not data_map:
+        data_map = direct_download_daily_data(
+            symbols=symbols,
+            period=period,
+            interval="1d",
+            chunk_size=25,
+        )
+
     results = []
 
     for _, row in universe.iterrows():
-        symbol = str(row.get("symbol", "")).strip().upper()
-        name = str(row.get("name", "")).strip()
+        symbol = clean_text(row.get("symbol", "")).upper()
+        name = clean_text(row.get("name", ""))
+
+        if not symbol:
+            continue
 
         if symbol not in data_map:
             continue
@@ -237,9 +465,36 @@ def run_nandi_market_scan(
     return report.head(top_n).reset_index(drop=True)
 
 
+def run_nandi_market_scan(
+    max_symbols: int = 250,
+    top_n: int = 10,
+    period: str = "6mo",
+) -> pd.DataFrame:
+    universe = get_nse_stock_universe(limit=max_symbols)
+
+    report = run_scan_for_universe(
+        universe=universe,
+        top_n=top_n,
+        period=period,
+    )
+
+    if not report.empty:
+        return report
+
+    fallback_universe = build_fallback_universe(limit=max_symbols)
+
+    fallback_report = run_scan_for_universe(
+        universe=fallback_universe,
+        top_n=top_n,
+        period=period,
+    )
+
+    return fallback_report
+
+
 def run_quick_scan() -> pd.DataFrame:
     return run_nandi_market_scan(
-        max_symbols=250,
+        max_symbols=50,
         top_n=10,
         period="6mo",
     )

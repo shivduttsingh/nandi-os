@@ -547,8 +547,12 @@ def nandi_decision_engine_page() -> None:
 
     st.info("Research support only. Not guaranteed profit or financial advice.")
 
-def tradingview_page() -> None:
-    page_title("TradingView Live Chart", "Live chart view for NIFTY, BANKNIFTY, SENSEX, commodities, and stocks.")
+
+  def tradingview_page() -> None:
+    page_title(
+        "TradingView Live Chart",
+        "Live chart view for NIFTY, BANKNIFTY, SENSEX, commodities, and stocks.",
+    )
 
     symbol_map = {
         "NIFTY 50": "NSE:NIFTY",
@@ -558,15 +562,16 @@ def tradingview_page() -> None:
         "RELIANCE": "NSE:RELIANCE",
         "HDFC BANK": "NSE:HDFCBANK",
         "INFOSYS": "NSE:INFY",
+        "INDIA VIX": "NSE:INDIAVIX",
         "CRUDE OIL": "MCX:CRUDEOIL1!",
         "NATURAL GAS": "MCX:NATURALGAS1!",
         "GOLD": "MCX:GOLD1!",
     }
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns(2)
 
     with col1:
-        selected = st.selectbox("Select Market", list(symbol_map.keys()))
+        selected = st.selectbox("Select Market", list(symbol_map.keys()), index=1)
 
     with col2:
         interval = st.selectbox(
@@ -577,18 +582,29 @@ def tradingview_page() -> None:
 
     symbol = symbol_map[selected]
 
-    st.info("TradingView chart is for live visual analysis. Trade execution stays manual for now.")
+    st.info("TradingView is for live visual charting. Trade execution stays manual for now.")
 
-    tradingview_html = f"""
-    <iframe
-        src="https://www.tradingview.com/widgetembed/?frameElementId=tradingview_chart&symbol={symbol}&interval={interval}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=light&style=1&timezone=Asia%2FKolkata&withdateranges=1&hideideas=1"
-        style="width:100%;height:720px;border:0;border-radius:18px;"
-        allowtransparency="true"
-        scrolling="no">
-    </iframe>
+    tv_widget = f"""
+    <div class="tradingview-widget-container" style="height:760px;width:100%">
+      <div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+      {{
+        "autosize": true,
+        "symbol": "{symbol}",
+        "interval": "{interval}",
+        "timezone": "Asia/Kolkata",
+        "theme": "light",
+        "style": "1",
+        "locale": "in",
+        "allow_symbol_change": true,
+        "calendar": false,
+        "support_host": "https://www.tradingview.com"
+      }}
+      </script>
+    </div>
     """
 
-    st.components.v1.html(tradingview_html, height=740)
+    st.components.v1.html(tv_widget, height=780)
 
 def settings() -> None:
     page_title("Settings", "Control Nandi OS preferences.")

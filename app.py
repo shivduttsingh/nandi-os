@@ -1047,7 +1047,47 @@ def watchlist():
             unsafe_allow_html=True,
         )
 
+def nandi_decision_engine_page():
+    simple_page("Nandi Decision Engine", "Market bias + strategy signal + risk check = final Nandi action.")
 
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        price = st.number_input("Current Price", value=24900.0)
+        support = st.number_input("Support", value=24700.0)
+        resistance = st.number_input("Resistance", value=25000.0)
+
+    with col2:
+        strategy_signal = st.selectbox("Strategy Signal", ["Buy", "Sell", "No Signal"])
+        capital = st.number_input("Capital", value=25000.0)
+
+    with col3:
+        max_risk = st.number_input("Max Risk %", value=2.0)
+        stop_loss_points = st.number_input("Stop Loss Points", value=40.0)
+        lot_size = st.number_input("Lot Size", value=1)
+
+    market = market_bias_engine(price, support, resistance)
+    risk = risk_check(capital, max_risk, stop_loss_points, lot_size)
+
+    final = nandi_decision(
+        market["bias"],
+        strategy_signal,
+        risk["status"]
+    )
+
+    st.subheader("Final Nandi Decision")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Action", final["action"])
+    c2.metric("Confidence", f'{final["confidence"]}%')
+    c3.metric("Market Bias", market["bias"])
+    c4.metric("Risk Status", risk["status"])
+
+    st.write("### Reasons")
+    for reason in final["reasons"]:
+        st.write(f"✅ {reason}")
+
+    st.info("Research support only. Not guaranteed profit or financial advice.")
 def settings():
     simple_page("Settings", "Control Nandi OS preferences.")
 

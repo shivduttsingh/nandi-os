@@ -11,6 +11,36 @@ from engine.market_data_engine import (
 )
 
 
+RSI_LENGTH = 14
+RSI_SOURCE = "Close"
+RSI_METHOD = "TradingView-style Wilder/RMA RSI"
+
+
+def calculate_rma(series: pd.Series, period: int = 14) -> pd.Series:
+    values = pd.to_numeric(series, errors="coerce")
+    rma = pd.Series(index=values.index, dtype="float64")
+
+    seed = values.rolling(window=period, min_periods=period).mean()
+    first_valid_index = seed.first_valid_index()
+
+    if first_valid_index is None:
+        return rma
+
+    first_position = values.index.get_loc(first_valid_index)
+    rma.iloc[first_position] = seed.iloc[first_position]
+
+    for i in range(first_position + 1, len(values)):
+        current_value = values.iloc[i]
+        previous_rma = rma.iloc[i - 1]
+
+        if pd.isna(current_value):
+            rma.iloc[i] = previous_rma
+        else:
+            rma.iloc[i] = ((previous_rma * (period - 1)) + current_value) / period
+
+    return rma
+
+
 def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     close = pd.to_numeric(close, errors="coerce")
     delta = close.diff()
@@ -18,11 +48,15 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    avg_gain = calculate_rma(gain, period)
+    avg_loss = calculate_rma(loss, period)
 
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+
+    rsi = rsi.where(~((avg_loss == 0) & (avg_gain > 0)), 100)
+    rsi = rsi.where(~((avg_gain == 0) & (avg_loss > 0)), 0)
+    rsi = rsi.where(~((avg_gain == 0) & (avg_loss == 0)), 50)
 
     return rsi
 
@@ -39,7 +73,7 @@ def analyse_stock_with_rsi_strategy(
 
     data = data.dropna(subset=["Close"])
 
-    if len(data) < 60:
+    if len(data) < 80:
         return {
             "symbol": symbol,
             "name": name,
@@ -48,7 +82,7 @@ def analyse_stock_with_rsi_strategy(
             "reason": "Not enough candle data.",
         }
 
-    data["RSI"] = calculate_rsi(data["Close"])
+    data["RSI"] = calculate_rsi(data["Close"], RSI_LENGTH)
     data["SMA20"] = data["Close"].rolling(20).mean()
     data["SMA50"] = data["Close"].rolling(50).mean()
     data["AVG_VOLUME20"] = data["Volume"].rolling(20).mean()
@@ -69,16 +103,16 @@ def analyse_stock_with_rsi_strategy(
 
     if rsi <= 24:
         score += 35
-        reasons.append("RSI is near or below 24 buy-watch zone.")
+        reasons.append("TradingView-style RSI is near or below 24 buy-watch zone.")
     elif 24 < rsi <= 35:
         score += 25
-        reasons.append("RSI is recovering from lower zone.")
+        reasons.append("TradingView-style RSI is recovering from lower zone.")
     elif rsi >= 78:
         score -= 35
-        reasons.append("RSI is near 78 exit/overbought zone.")
+        reasons.append("TradingView-style RSI is near 78 exit/overbought zone.")
     else:
         score += 5
-        reasons.append("RSI is neutral.")
+        reasons.append("TradingView-style RSI is neutral.")
 
     if sma20 and close > sma20:
         score += 15
@@ -138,6 +172,9 @@ def analyse_stock_with_rsi_strategy(
         "name": name,
         "close": round(close, 2),
         "rsi": round(rsi, 2),
+        "rsi_length": RSI_LENGTH,
+        "rsi_source": RSI_SOURCE,
+        "rsi_method": RSI_METHOD,
         "sma20": round(sma20, 2),
         "sma50": round(sma50, 2),
         "volume_ratio": round(volume_ratio, 2),
@@ -166,7 +203,7 @@ def run_nandi_market_scan(
         symbols=symbols,
         period=period,
         interval="1d",
-        chunk_size=40,
+        chunk_size=25,
     )
 
     results = []

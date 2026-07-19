@@ -8,7 +8,7 @@ import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.backtest import NandiBacktester
-from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before
+from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
 
 
@@ -204,20 +204,31 @@ def daily_report() -> None:
 
 
 def backtest_lab() -> None:
-    header("Backtest Lab", "Exactly three calendar months • same Nandi OI decision engine")
+    header("Backtest Lab", "Daily, weekly, monthly or custom dates • same Nandi OI decision engine")
     st.info("Research simulation only. Historical candles cannot reproduce 30-second bid/ask snapshots exactly, so Nandi replays five-minute premium, volume and OI candles without future-data access.")
 
-    end = st.date_input(
-        "Backtest end date", value=date.today() - timedelta(days=1),
-        max_value=date.today() - timedelta(days=1),
-    )
-    start = exactly_three_months_before(end)
-    left, right = st.columns(2)
-    left.metric("Fixed start date", start.strftime("%d %b %Y"))
-    right.metric("Fixed end date", end.strftime("%d %b %Y"))
-    st.caption("The period is locked to exactly three calendar months; it cannot be shortened or extended.")
+    period = st.selectbox("Test period", ["Single day", "One week", "One month", "Custom dates"])
+    latest = date.today() - timedelta(days=1)
+    if period == "Single day":
+        selected = st.date_input("Trading date", value=latest, max_value=latest)
+        start = end = selected
+    elif period == "One week":
+        end = st.date_input("Week ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=6)
+    elif period == "One month":
+        end = st.date_input("Month ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=29)
+    else:
+        first, second = st.columns(2)
+        start = first.date_input("Start date", value=latest - timedelta(days=29), max_value=latest)
+        end = second.date_input("End date", value=latest, min_value=start, max_value=latest)
 
-    if st.button("Run Three-Month Backtest", type="primary", use_container_width=True):
+    left, right = st.columns(2)
+    left.metric("Start date", start.strftime("%d %b %Y"))
+    right.metric("End date", end.strftime("%d %b %Y"))
+    st.caption("Choose any completed historical period available through Upstox Plus. Recent unexpired weekly contracts may not be available yet.")
+
+    if st.button("Run Backtest", type="primary", use_container_width=True):
         progress_bar = st.progress(0.0, text="Checking Upstox Plus historical access…")
 
         def update_progress(done: int, total: int, label: str) -> None:
@@ -230,7 +241,7 @@ def backtest_lab() -> None:
             result = NandiBacktester().run(snapshots)
             st.session_state.backtest_result = result
             progress_bar.progress(1.0, text="Backtest completed")
-            st.success("Three-month replay completed without placing any broker order.")
+            st.success("Historical replay completed without placing any broker order.")
         except (UpstoxAPIError, ValueError) as exc:
             progress_bar.empty()
             st.error(str(exc))

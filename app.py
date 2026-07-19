@@ -36,7 +36,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if "oi_engine" not in st.session_state:
-    st.session_state.oi_engine = NandiOIEngine()
+    st.session_state.oi_engine = NandiOIEngineV2()
 if "upstox_client" not in st.session_state:
     token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
     try:
@@ -102,7 +102,7 @@ def command_center() -> None:
     c2.metric("Decision", decision.action if decision else "NO DATA")
     c3.metric("Bullish", f"{decision.bullish_score:.1f}" if decision else "—")
     c4.metric("Bearish", f"{decision.bearish_score:.1f}" if decision else "—")
-    st.info("Nandi approves only scores ≥80, a ≥20-point directional lead, price/premium confirmation, and three persistent snapshots.")
+    st.info("Nandi V2 requires a score ≥75, a ≥25-point lead, multi-timeframe trend, sustained volume, multi-strike OI flow and three persistent snapshots.")
     trades = journal.trades_today()
     st.metric("Paper trades today", f"{len(trades)} / 3")
 
@@ -164,7 +164,7 @@ def paper_trades() -> None:
         leg = next((x for x in snapshot.legs if x.side == side and x.strike == decision.selected_strike), None)
         if leg:
             st.success(f"Approved: {decision.action} {leg.strike:.0f} at observed premium ₹{leg.ltp:.2f}")
-            stop = st.number_input("Paper stop price", value=round(leg.ltp * 0.80, 2), min_value=0.05)
+            stop = st.number_input("Paper stop price", value=round(leg.ltp * 0.90, 2), min_value=0.05)
             target = st.number_input("Paper target price", value=round(leg.ltp * 1.30, 2), min_value=0.05)
             if st.button("Open Paper Trade", type="primary"):
                 try:
@@ -241,7 +241,8 @@ def backtest_lab() -> None:
             snapshots = client.build_snapshots(start, end, progress=update_progress)
             baseline = NandiBacktester().run(snapshots)
             result = NandiBacktester(
-                max_trades_daily=2, max_losses_daily=2, reset_snapshots=3,
+                stop_pct=0.10, target_pct=0.30, max_trades_daily=2,
+                max_losses_daily=2, reset_snapshots=3,
                 engine_factory=NandiOIEngineV2,
             ).run(snapshots)
             st.session_state.backtest_result_v1 = baseline
@@ -267,13 +268,13 @@ def backtest_lab() -> None:
             "Max drawdown": baseline.max_drawdown,
         } if baseline else {},
         {
-            "Version": "V2 regime + flow", "Trades": len(result.trades),
+            "Version": "V2 flow (10% stop / 30% target)", "Trades": len(result.trades),
             "Win rate %": round(result.win_rate, 1), "Net points": result.net_points,
             "Max drawdown": result.max_drawdown,
         },
     ])
     st.dataframe(comparison[comparison["Version"].notna()], use_container_width=True, hide_index=True)
-    st.caption("Both versions now enter on the next five-minute candle and use candle high/low for conservative stop/target simulation.")
+    st.caption("Both versions enter on the next five-minute candle. V1 keeps its 20%/30% baseline; V2 uses the requested 10% stop and 30% target.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("V2 trades", len(result.trades))
@@ -327,9 +328,10 @@ def settings() -> None:
     st.write("Add this to your Streamlit app Secrets. Never paste the token into source code or chat.")
     st.write("Underlying: `NSE_INDEX|Nifty 50`")
     st.write("Expiry: `current_week` (automatic rollover)")
-    st.write("Snapshot requirement: 3")
-    st.write("Approval score: 80/100")
-    st.write("Minimum directional lead: 20 points")
+    st.write("V2 snapshot requirement: 3 after eight-snapshot regime warm-up")
+    st.write("V2 approval score: 75/100 (quality score, not guaranteed probability)")
+    st.write("V2 minimum directional lead: 25 points")
+    st.write("Paper risk: 10% stop / 30% target")
 
 
 pages = {

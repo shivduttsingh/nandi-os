@@ -81,7 +81,10 @@ def test_v2_replay_limits_reentries_until_signal_resets():
         for index in range(14)
     ]
     result = NandiBacktester(
-        max_trades_daily=2, max_losses_daily=2, reset_snapshots=3,
+        stop_pct=0.10, target_pct=0.30, max_trades_daily=2,
+        max_losses_daily=2, reset_snapshots=3,
         engine_factory=NandiOIEngineV2,
     ).run(snapshots)
     assert len(result.trades) == 1
+    assert result.trades[0].stop_price == round(result.trades[0].entry_price * 0.90, 2)
+    assert result.trades[0].target_price == round(result.trades[0].entry_price * 1.30, 2)

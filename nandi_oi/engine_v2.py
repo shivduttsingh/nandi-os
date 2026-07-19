@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from statistics import median
 
 from .engine import EngineConfig, NandiOIEngine
 from .models import Decision, OptionLeg, OptionSnapshot
@@ -58,22 +59,46 @@ class NandiOIEngineV2(NandiOIEngine):
         return min(100.0, bull / denominator * 100), min(100.0, bear / denominator * 100), bull_count, bear_count
 
     def _regime(self) -> tuple[str, float]:
-        if len(self.history) < 6:
+        if len(self.history) < 8:
             return "UNCONFIRMED", 0.0
         recent = list(self.history)[-8:]
         recent = [item for item in recent if item.timestamp.date() == recent[-1].timestamp.date()]
-        if len(recent) < 6:
+        if len(recent) < 8:
             return "UNCONFIRMED", 0.0
-        prices = [item.spot for item in recent]
-        displacement = prices[-1] - prices[0]
-        path = sum(abs(b - a) for a, b in zip(prices, prices[1:]))
-        efficiency = abs(displacement) / path if path else 0.0
-        minimum_move = prices[-1] * 0.001
-        if efficiency >= 0.55 and displacement >= minimum_move:
+        long_prices = [item.spot for item in recent]
+        short_prices = long_prices[-4:]
+
+        def movement(prices: list[float]) -> tuple[float, float]:
+            displacement = prices[-1] - prices[0]
+            path = sum(abs(b - a) for a, b in zip(prices, prices[1:]))
+            return displacement, abs(displacement) / path if path else 0.0
+
+        long_move, long_efficiency = movement(long_prices)
+        short_move, short_efficiency = movement(short_prices)
+        long_minimum = long_prices[-1] * 0.001
+        short_minimum = short_prices[-1] * 0.0005
+        efficiency = min(long_efficiency, short_efficiency)
+        if efficiency >= 0.55 and long_move >= long_minimum and short_move >= short_minimum:
             return "UPTREND", efficiency
-        if efficiency >= 0.55 and displacement <= -minimum_move:
+        if efficiency >= 0.55 and long_move <= -long_minimum and short_move <= -short_minimum:
             return "DOWNTREND", efficiency
         return "SIDEWAYS", efficiency
+
+    def _volume_confirmation(self, snapshot: OptionSnapshot, direction: str) -> int:
+        previous = list(self.history)[:-1][-4:]
+        if len(previous) < 3:
+            return 0
+        confirmed = 0
+        for leg in self._nearby_legs(snapshot):
+            bullish, bearish = self._supports(leg)
+            supports = bullish if direction == "BULL" else bearish
+            prior_volumes = [
+                old.volume for item in previous for old in item.legs
+                if old.strike == leg.strike and old.side == leg.side and old.volume > 0
+            ]
+            if supports and prior_volumes and leg.volume >= median(prior_volumes):
+                confirmed += 1
+        return confirmed
 
     def _persistent_flow(self, direction: str) -> bool:
         if len(self.history) < self.config.persistence_snapshots:
@@ -93,6 +118,8 @@ class NandiOIEngineV2(NandiOIEngine):
         premium_bull, premium_bear, liquidity, _ = self._premium_liquidity_scores(snapshot)
         persistent_bull = self._persistent_flow("BULL")
         persistent_bear = self._persistent_flow("BEAR")
+        volume_bull = self._volume_confirmation(snapshot, "BULL")
+        volume_bear = self._volume_confirmation(snapshot, "BEAR")
 
         regime_bull = 100.0 if regime == "UPTREND" and price_bull else 0.0
         regime_bear = 100.0 if regime == "DOWNTREND" and price_bear else 0.0
@@ -108,12 +135,12 @@ class NandiOIEngineV2(NandiOIEngine):
         action = "NO TRADE"
         if (
             bull >= self.config.approval_score and bull - bear >= self.config.minimum_lead
-            and regime_bull and premium_bull and persistent_bull and bull_count >= 3
+            and regime_bull and premium_bull and persistent_bull and bull_count >= 3 and volume_bull >= 3
         ):
             action = "BUY CE"
         elif (
             bear >= self.config.approval_score and bear - bull >= self.config.minimum_lead
-            and regime_bear and premium_bear and persistent_bear and bear_count >= 3
+            and regime_bear and premium_bear and persistent_bear and bear_count >= 3 and volume_bear >= 3
         ):
             action = "BUY PE"
 
@@ -124,6 +151,7 @@ class NandiOIEngineV2(NandiOIEngine):
                 f"{max(bull_count, bear_count)} nearby option legs confirm OI flow",
                 f"Market regime is {regime.lower()} (efficiency {efficiency:.0%})",
                 "OI flow persisted across three snapshots",
+                f"{max(volume_bull, volume_bear)} confirming legs have sustained relative volume",
                 "Underlying breakout and option premium agree",
             ])
         else:
@@ -133,6 +161,8 @@ class NandiOIEngineV2(NandiOIEngine):
                 blockers.append("Fewer than three nearby legs confirm the direction")
             if not persistent_bull and not persistent_bear:
                 blockers.append("OI flow has not persisted for three snapshots")
+            if max(volume_bull, volume_bear) < 3:
+                blockers.append("Fewer than three confirming legs have sustained relative volume")
             if max(bull, bear) < self.config.approval_score:
                 blockers.append("V2 quality score is below 75")
 

@@ -20,6 +20,9 @@ class OptionLeg:
     volume: float = 0.0
     bid: float = 0.0
     ask: float = 0.0
+    open_price: float = 0.0
+    high_price: float = 0.0
+    low_price: float = 0.0
 
     @property
     def spread_pct(self) -> float:

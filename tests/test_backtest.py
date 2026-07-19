@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from nandi_oi.backtest import NandiBacktester
+from nandi_oi.engine_v2 import NandiOIEngineV2
 from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before
 from nandi_oi.models import OptionLeg, OptionSnapshot
 
@@ -60,3 +61,27 @@ def test_backtest_rejects_empty_history():
         assert "No historical snapshots" in str(exc)
     else:
         raise AssertionError("Expected an empty-history error")
+
+
+def test_v2_waits_for_regime_then_approves_multi_strike_flow():
+    engine = NandiOIEngineV2()
+    start = datetime(2026, 7, 20, 9, 20)
+    decisions = [
+        engine.add_snapshot(snapshot(start + timedelta(minutes=5 * index), 25000 + index * 12, 100 + index * 5))
+        for index in range(8)
+    ]
+    assert all(item.action == "NO TRADE" for item in decisions[:5])
+    assert decisions[-1].action == "BUY CE"
+
+
+def test_v2_replay_limits_reentries_until_signal_resets():
+    start = datetime(2026, 7, 20, 9, 20)
+    snapshots = [
+        snapshot(start + timedelta(minutes=5 * index), 25000 + index * 12, 100 + index * 10)
+        for index in range(14)
+    ]
+    result = NandiBacktester(
+        max_trades_daily=2, max_losses_daily=2, reset_snapshots=3,
+        engine_factory=NandiOIEngineV2,
+    ).run(snapshots)
+    assert len(result.trades) == 1

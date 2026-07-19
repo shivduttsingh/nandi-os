@@ -74,12 +74,15 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
             chunk_start = chunk_end + timedelta(days=1)
         return result
 
-    def option_candles(self, instrument_key: str, start: date, end: date) -> dict[datetime, tuple[float, float, float]]:
+    def option_candles(self, instrument_key: str, start: date, end: date) -> dict[datetime, tuple[float, float, float, float, float, float]]:
         key = quote(instrument_key, safe="")
         url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{key}/5minute/{end}/{start}"
-        result: dict[datetime, tuple[float, float, float]] = {}
+        result: dict[datetime, tuple[float, float, float, float, float, float]] = {}
         for row in self._candles(self._get_url(url)):
-            result[datetime.fromisoformat(row[0])] = (float(row[4]), float(row[5]), float(row[6]))
+            result[datetime.fromisoformat(row[0])] = (
+                float(row[1]), float(row[2]), float(row[3]), float(row[4]),
+                float(row[5]), float(row[6]),
+            )
         return result
 
     def build_snapshots(
@@ -114,13 +117,14 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
             candles = self.option_candles(contract["instrument_key"], first_day, last_day)
             previous: tuple[float, float, float] | None = None
             for timestamp in sorted(candles):
-                ltp, volume, oi = candles[timestamp]
+                open_price, high_price, low_price, ltp, volume, oi = candles[timestamp]
                 prior_ltp, _, prior_oi = previous or (ltp, volume, oi)
                 side = str(contract["instrument_type"])
                 by_time[timestamp].append(OptionLeg(
                     strike=float(contract["strike_price"]), side=side, oi=oi,
                     change_oi=oi - prior_oi, ltp=ltp, change_ltp=ltp - prior_ltp,
-                    volume=volume, bid=ltp, ask=ltp,
+                    volume=volume, bid=ltp, ask=ltp, open_price=open_price,
+                    high_price=high_price, low_price=low_price,
                 ))
                 expiry_by_time[timestamp] = str(contract["expiry"])
                 previous = (ltp, volume, oi)

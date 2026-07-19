@@ -85,8 +85,8 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
     def build_snapshots(
         self, start: date, end: date, progress: Callable[[int, int, str], None] | None = None,
     ) -> list[OptionSnapshot]:
-        if exactly_three_months_before(end) != start:
-            raise ValueError("Nandi backtests must cover exactly three calendar months")
+        if start > end:
+            raise ValueError("Backtest start date must be on or before the end date")
         expiries = [item for item in self.get_expiries() if start <= item <= end + timedelta(days=7)]
         if not expiries:
             raise UpstoxAPIError("No expired NIFTY weekly contracts were available for this period")

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
+from nandi_oi.backtest import NandiBacktester
+from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before
 from nandi_oi.paper import PaperJournal
 
 
@@ -201,6 +203,72 @@ def daily_report() -> None:
         st.dataframe(pd.DataFrame(st.session_state.decision_log), use_container_width=True, hide_index=True)
 
 
+def backtest_lab() -> None:
+    header("Backtest Lab", "Exactly three calendar months • same Nandi OI decision engine")
+    st.info("Research simulation only. Historical candles cannot reproduce 30-second bid/ask snapshots exactly, so Nandi replays five-minute premium, volume and OI candles without future-data access.")
+
+    end = st.date_input(
+        "Backtest end date", value=date.today() - timedelta(days=1),
+        max_value=date.today() - timedelta(days=1),
+    )
+    start = exactly_three_months_before(end)
+    left, right = st.columns(2)
+    left.metric("Fixed start date", start.strftime("%d %b %Y"))
+    right.metric("Fixed end date", end.strftime("%d %b %Y"))
+    st.caption("The period is locked to exactly three calendar months; it cannot be shortened or extended.")
+
+    if st.button("Run Three-Month Backtest", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0, text="Checking Upstox Plus historical access…")
+
+        def update_progress(done: int, total: int, label: str) -> None:
+            progress_bar.progress(done / max(total, 1), text=f"Loading {done}/{total}: {label}")
+
+        try:
+            token = st.session_state.upstox_client.access_token
+            client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
+            snapshots = client.build_snapshots(start, end, progress=update_progress)
+            result = NandiBacktester().run(snapshots)
+            st.session_state.backtest_result = result
+            progress_bar.progress(1.0, text="Backtest completed")
+            st.success("Three-month replay completed without placing any broker order.")
+        except (UpstoxAPIError, ValueError) as exc:
+            progress_bar.empty()
+            st.error(str(exc))
+
+    result = st.session_state.get("backtest_result")
+    if not result:
+        st.write("Run the test to generate performance evidence and a downloadable trade ledger.")
+        st.warning("The expired-instruments endpoints require Upstox Plus. Your existing token remains read-only.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Trades", len(result.trades))
+    c2.metric("Win rate", f"{result.win_rate:.1f}%")
+    c3.metric("Net premium points", f"{result.net_points:+.2f}")
+    c4.metric("Maximum drawdown", f"{result.max_drawdown:.2f}")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Wins", result.wins)
+    c6.metric("Losses", result.losses)
+    c7.metric("Snapshots replayed", result.snapshots)
+    c8.metric("NO TRADE decisions", result.no_trade_decisions)
+
+    if result.equity_curve:
+        st.subheader("Cumulative premium points")
+        st.line_chart(pd.DataFrame({"Cumulative points": result.equity_curve}))
+    rows = result.rows()
+    if rows:
+        frame = pd.DataFrame(rows)
+        st.subheader("Historical trade ledger")
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download Backtest CSV", frame.to_csv(index=False).encode("utf-8"),
+            file_name=f"nandi_backtest_{result.start_date}_{result.end_date}.csv", mime="text/csv",
+            use_container_width=True,
+        )
+    else:
+        st.warning("The strategy correctly produced no approved entries in this three-month period.")
+
+
 def settings() -> None:
     header("Settings", "Secure Upstox configuration")
     st.code('[upstox]\naccess_token = "PASTE_YOUR_ANALYTICS_TOKEN_HERE"', language="toml")
@@ -217,6 +285,7 @@ pages = {
     "Live OI Engine": live_engine,
     "Paper Trades": paper_trades,
     "Daily Report": daily_report,
+    "Backtest Lab": backtest_lab,
     "Settings": settings,
 }
 if not st.session_state.logged_in:

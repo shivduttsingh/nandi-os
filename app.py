@@ -8,7 +8,6 @@ import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.backtest import NandiBacktester
-from nandi_oi.engine_v2 import NandiOIEngineV2
 from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
 
@@ -36,7 +35,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if "oi_engine" not in st.session_state:
-    st.session_state.oi_engine = NandiOIEngineV2()
+    st.session_state.oi_engine = NandiOIEngine()
 if "upstox_client" not in st.session_state:
     token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
     try:
@@ -102,7 +101,7 @@ def command_center() -> None:
     c2.metric("Decision", decision.action if decision else "NO DATA")
     c3.metric("Bullish", f"{decision.bullish_score:.1f}" if decision else "—")
     c4.metric("Bearish", f"{decision.bearish_score:.1f}" if decision else "—")
-    st.info("Nandi V2 requires a score ≥75, a ≥25-point lead, multi-timeframe trend, sustained volume, multi-strike OI flow and three persistent snapshots.")
+    st.info("Nandi V1 approves only scores ≥80, a ≥20-point directional lead, price/premium confirmation and three persistent snapshots.")
     trades = journal.trades_today()
     st.metric("Paper trades today", f"{len(trades)} / 3")
 
@@ -164,7 +163,7 @@ def paper_trades() -> None:
         leg = next((x for x in snapshot.legs if x.side == side and x.strike == decision.selected_strike), None)
         if leg:
             st.success(f"Approved: {decision.action} {leg.strike:.0f} at observed premium ₹{leg.ltp:.2f}")
-            stop = st.number_input("Paper stop price", value=round(leg.ltp * 0.90, 2), min_value=0.05)
+            stop = st.number_input("Paper stop price", value=round(leg.ltp * 0.80, 2), min_value=0.05)
             target = st.number_input("Paper target price", value=round(leg.ltp * 1.30, 2), min_value=0.05)
             if st.button("Open Paper Trade", type="primary"):
                 try:
@@ -239,13 +238,7 @@ def backtest_lab() -> None:
             token = st.session_state.upstox_client.access_token
             client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
             snapshots = client.build_snapshots(start, end, progress=update_progress)
-            baseline = NandiBacktester().run(snapshots)
-            result = NandiBacktester(
-                stop_pct=0.10, target_pct=0.30, max_trades_daily=2,
-                max_losses_daily=2, reset_snapshots=3,
-                engine_factory=NandiOIEngineV2,
-            ).run(snapshots)
-            st.session_state.backtest_result_v1 = baseline
+            result = NandiBacktester(stop_pct=0.20, target_pct=0.30).run(snapshots)
             st.session_state.backtest_result = result
             progress_bar.progress(1.0, text="Backtest completed")
             st.success("Historical replay completed without placing any broker order.")
@@ -259,28 +252,14 @@ def backtest_lab() -> None:
         st.warning("The expired-instruments endpoints require Upstox Plus. Your existing token remains read-only.")
         return
 
-    baseline = st.session_state.get("backtest_result_v1")
-    st.subheader("V1 versus V2 — same historical data")
-    comparison = pd.DataFrame([
-        {
-            "Version": "V1 baseline", "Trades": len(baseline.trades),
-            "Win rate %": round(baseline.win_rate, 1), "Net points": baseline.net_points,
-            "Max drawdown": baseline.max_drawdown,
-        } if baseline else {},
-        {
-            "Version": "V2 flow (10% stop / 30% target)", "Trades": len(result.trades),
-            "Win rate %": round(result.win_rate, 1), "Net points": result.net_points,
-            "Max drawdown": result.max_drawdown,
-        },
-    ])
-    st.dataframe(comparison[comparison["Version"].notna()], use_container_width=True, hide_index=True)
-    st.caption("Both versions enter on the next five-minute candle. V1 keeps its 20%/30% baseline; V2 uses the requested 10% stop and 30% target.")
+    st.subheader("Nandi V1 backtest results")
+    st.caption("V1 enters on the next five-minute candle and uses candle high/low with a 20% stop and 30% target.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("V2 trades", len(result.trades))
-    c2.metric("V2 win rate", f"{result.win_rate:.1f}%")
-    c3.metric("V2 net premium points", f"{result.net_points:+.2f}")
-    c4.metric("V2 maximum drawdown", f"{result.max_drawdown:.2f}")
+    c1.metric("Trades", len(result.trades))
+    c2.metric("Win rate", f"{result.win_rate:.1f}%")
+    c3.metric("Net premium points", f"{result.net_points:+.2f}")
+    c4.metric("Maximum drawdown", f"{result.max_drawdown:.2f}")
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Wins", result.wins)
     c6.metric("Losses", result.losses)
@@ -293,7 +272,7 @@ def backtest_lab() -> None:
     rows = result.rows()
     if rows:
         frame = pd.DataFrame(rows)
-        st.subheader("V2 loss and setup analysis")
+        st.subheader("V1 loss and setup analysis")
         frame["Result"] = frame["pnl_points"].apply(lambda value: "Win" if value > 0 else "Loss")
         frame["Entry hour"] = pd.to_datetime(frame["opened_at"]).dt.hour
         by_action = frame.groupby("action", as_index=False).agg(
@@ -311,7 +290,7 @@ def backtest_lab() -> None:
         with st.expander("Performance by entry hour"):
             st.dataframe(by_hour, use_container_width=True, hide_index=True)
 
-        st.subheader("V2 historical trade ledger")
+        st.subheader("V1 historical trade ledger")
         st.dataframe(frame, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Backtest CSV", frame.to_csv(index=False).encode("utf-8"),
@@ -328,10 +307,10 @@ def settings() -> None:
     st.write("Add this to your Streamlit app Secrets. Never paste the token into source code or chat.")
     st.write("Underlying: `NSE_INDEX|Nifty 50`")
     st.write("Expiry: `current_week` (automatic rollover)")
-    st.write("V2 snapshot requirement: 3 after eight-snapshot regime warm-up")
-    st.write("V2 approval score: 75/100 (quality score, not guaranteed probability)")
-    st.write("V2 minimum directional lead: 25 points")
-    st.write("Paper risk: 10% stop / 30% target")
+    st.write("V1 snapshot requirement: 3")
+    st.write("V1 approval score: 80/100 (quality score, not guaranteed probability)")
+    st.write("V1 minimum directional lead: 20 points")
+    st.write("Paper risk: 20% stop / 30% target")
 
 
 pages = {

@@ -8,6 +8,7 @@ import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.backtest import NandiBacktester
+from nandi_oi.engine_v2 import NandiOIEngineV2
 from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
 
@@ -238,7 +239,12 @@ def backtest_lab() -> None:
             token = st.session_state.upstox_client.access_token
             client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
             snapshots = client.build_snapshots(start, end, progress=update_progress)
-            result = NandiBacktester().run(snapshots)
+            baseline = NandiBacktester().run(snapshots)
+            result = NandiBacktester(
+                max_trades_daily=2, max_losses_daily=2, reset_snapshots=3,
+                engine_factory=NandiOIEngineV2,
+            ).run(snapshots)
+            st.session_state.backtest_result_v1 = baseline
             st.session_state.backtest_result = result
             progress_bar.progress(1.0, text="Backtest completed")
             st.success("Historical replay completed without placing any broker order.")
@@ -252,11 +258,28 @@ def backtest_lab() -> None:
         st.warning("The expired-instruments endpoints require Upstox Plus. Your existing token remains read-only.")
         return
 
+    baseline = st.session_state.get("backtest_result_v1")
+    st.subheader("V1 versus V2 — same historical data")
+    comparison = pd.DataFrame([
+        {
+            "Version": "V1 baseline", "Trades": len(baseline.trades),
+            "Win rate %": round(baseline.win_rate, 1), "Net points": baseline.net_points,
+            "Max drawdown": baseline.max_drawdown,
+        } if baseline else {},
+        {
+            "Version": "V2 regime + flow", "Trades": len(result.trades),
+            "Win rate %": round(result.win_rate, 1), "Net points": result.net_points,
+            "Max drawdown": result.max_drawdown,
+        },
+    ])
+    st.dataframe(comparison[comparison["Version"].notna()], use_container_width=True, hide_index=True)
+    st.caption("Both versions now enter on the next five-minute candle and use candle high/low for conservative stop/target simulation.")
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Trades", len(result.trades))
-    c2.metric("Win rate", f"{result.win_rate:.1f}%")
-    c3.metric("Net premium points", f"{result.net_points:+.2f}")
-    c4.metric("Maximum drawdown", f"{result.max_drawdown:.2f}")
+    c1.metric("V2 trades", len(result.trades))
+    c2.metric("V2 win rate", f"{result.win_rate:.1f}%")
+    c3.metric("V2 net premium points", f"{result.net_points:+.2f}")
+    c4.metric("V2 maximum drawdown", f"{result.max_drawdown:.2f}")
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("Wins", result.wins)
     c6.metric("Losses", result.losses)
@@ -269,7 +292,25 @@ def backtest_lab() -> None:
     rows = result.rows()
     if rows:
         frame = pd.DataFrame(rows)
-        st.subheader("Historical trade ledger")
+        st.subheader("V2 loss and setup analysis")
+        frame["Result"] = frame["pnl_points"].apply(lambda value: "Win" if value > 0 else "Loss")
+        frame["Entry hour"] = pd.to_datetime(frame["opened_at"]).dt.hour
+        by_action = frame.groupby("action", as_index=False).agg(
+            Trades=("action", "size"), Wins=("Result", lambda values: (values == "Win").sum()),
+            Net_points=("pnl_points", "sum"), Average_points=("pnl_points", "mean"),
+        )
+        by_action["Win_rate_%"] = (by_action["Wins"] / by_action["Trades"] * 100).round(1)
+        st.dataframe(by_action, use_container_width=True, hide_index=True)
+
+        by_hour = frame.groupby("Entry hour", as_index=False).agg(
+            Trades=("action", "size"), Wins=("Result", lambda values: (values == "Win").sum()),
+            Net_points=("pnl_points", "sum"),
+        )
+        by_hour["Win_rate_%"] = (by_hour["Wins"] / by_hour["Trades"] * 100).round(1)
+        with st.expander("Performance by entry hour"):
+            st.dataframe(by_hour, use_container_width=True, hide_index=True)
+
+        st.subheader("V2 historical trade ledger")
         st.dataframe(frame, use_container_width=True, hide_index=True)
         st.download_button(
             "Download Backtest CSV", frame.to_csv(index=False).encode("utf-8"),

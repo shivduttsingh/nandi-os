@@ -32,7 +32,7 @@ class UpstoxOptionChainClient:
         self.instrument_key = instrument_key
         self.expiry = expiry
         self.timeout_seconds = timeout_seconds
-        self._last: dict[str, tuple[float, float]] = {}
+        self._last: dict[str, tuple[float, float, float]] = {}
         self._prior_spots: deque[float] = deque(maxlen=20)
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
@@ -95,10 +95,12 @@ class UpstoxOptionChainClient:
                 market = option.get("market_data") or {}
                 oi = self._number(market.get("oi"))
                 ltp = self._number(market.get("ltp"))
+                cumulative_volume = self._number(market.get("volume"))
                 previous = self._last.get(key)
                 # First snapshot uses Upstox prev_oi and close; subsequent snapshots use actual deltas.
                 previous_oi = previous[0] if previous else self._number(market.get("prev_oi"))
                 previous_ltp = previous[1] if previous else self._number(market.get("close_price"))
+                interval_volume = max(cumulative_volume - previous[2], 0.0) if previous else cumulative_volume
                 legs.append(
                     OptionLeg(
                         strike=strike,
@@ -107,12 +109,12 @@ class UpstoxOptionChainClient:
                         change_oi=oi - previous_oi,
                         ltp=ltp,
                         change_ltp=ltp - previous_ltp,
-                        volume=self._number(market.get("volume")),
+                        volume=interval_volume,
                         bid=self._number(market.get("bid_price")),
                         ask=self._number(market.get("ask_price")),
                     )
                 )
-                self._last[key] = (oi, ltp)
+                self._last[key] = (oi, ltp, cumulative_volume)
 
         self._prior_spots.append(spot)
         return OptionSnapshot(

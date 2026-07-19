@@ -1,5 +1,2 @@
-streamlit
-pandas
-numpy
-yfinance
-requests
+streamlit>=1.40
+pandas>=2.0

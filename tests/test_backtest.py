@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from nandi_oi.backtest import NandiBacktester
-from nandi_oi.historical import exactly_three_months_before
+from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before
 from nandi_oi.models import OptionLeg, OptionSnapshot
 
 
@@ -29,6 +29,16 @@ def snapshot(at: datetime, spot: float, ce_ltp: float, bullish: bool = True) -> 
 def test_three_month_window_is_calendar_accurate():
     assert exactly_three_months_before(date(2026, 7, 31)) == date(2026, 4, 30)
     assert exactly_three_months_before(date(2026, 5, 20)) == date(2026, 2, 20)
+
+
+def test_manual_date_range_rejects_reverse_dates():
+    client = UpstoxHistoricalClient(access_token="unused")
+    try:
+        client.build_snapshots(date(2026, 6, 2), date(2026, 6, 1))
+    except ValueError as exc:
+        assert "start date" in str(exc)
+    else:
+        raise AssertionError("Expected a reverse-date validation error")
 
 
 def test_backtest_reuses_persistence_and_closes_target():

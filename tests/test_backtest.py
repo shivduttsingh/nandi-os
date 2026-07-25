@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
 from nandi_oi.backtest import NandiBacktester
-from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before
+from nandi_oi.historical import UpstoxHistoricalClient, exactly_three_months_before, monthly_expiries
 from nandi_oi.models import OptionLeg, OptionSnapshot
 
 
@@ -39,6 +39,15 @@ def test_manual_date_range_rejects_reverse_dates():
         assert "start date" in str(exc)
     else:
         raise AssertionError("Expected a reverse-date validation error")
+
+
+def test_monthly_expiries_use_last_listed_expiry_in_each_month():
+    expiries = [
+        date(2026, 4, 2), date(2026, 4, 9), date(2026, 4, 30),
+        date(2026, 5, 7), date(2026, 5, 28),
+        date(2026, 7, 7), date(2026, 7, 14), date(2026, 7, 21),
+    ]
+    assert monthly_expiries(expiries) == [date(2026, 4, 30), date(2026, 5, 28)]
 
 
 def test_backtest_reuses_persistence_and_closes_target():

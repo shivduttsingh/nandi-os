@@ -18,6 +18,17 @@ def exactly_three_months_before(value: date) -> date:
     return date(year, month, min(value.day, calendar.monthrange(year, month)[1]))
 
 
+def monthly_expiries(expiries: list[date]) -> list[date]:
+    """Use the final expiry date listed by Upstox in each calendar month."""
+    by_month: dict[tuple[int, int], date] = {}
+    for expiry in sorted(expiries):
+        by_month[(expiry.year, expiry.month)] = expiry
+    return sorted(
+        expiry for expiry in by_month.values()
+        if expiry.day >= calendar.monthrange(expiry.year, expiry.month)[1] - 6
+    )
+
+
 class UpstoxHistoricalClient(UpstoxOptionChainClient):
     """Build five-minute Nandi snapshots from Upstox Plus expired instruments."""
 
@@ -26,9 +37,15 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
         return sorted(datetime.strptime(item, "%Y-%m-%d").date() for item in data)
 
     def get_contracts(self, expiry: date) -> list[dict]:
-        return self._get("/expired-instruments/option/contract", {
+        cache = getattr(self, "_contract_cache", {})
+        if expiry in cache:
+            return cache[expiry]
+        contracts = self._get("/expired-instruments/option/contract", {
             "instrument_key": self.instrument_key, "expiry_date": expiry.isoformat(),
         }).get("data", [])
+        cache[expiry] = contracts
+        self._contract_cache = cache
+        return contracts
 
     def _get_url(self, url: str) -> dict:
         # Reuse the authenticated transport while allowing v3 and encoded path parameters.
@@ -77,6 +94,10 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
         return result
 
     def option_candles(self, instrument_key: str, start: date, end: date) -> dict[datetime, tuple[float, float, float, float, float, float]]:
+        cache_key = (instrument_key, start, end)
+        cache = getattr(self, "_option_candle_cache", {})
+        if cache_key in cache:
+            return cache[cache_key]
         key = quote(instrument_key, safe="")
         url = f"https://api.upstox.com/v2/expired-instruments/historical-candle/{key}/5minute/{end}/{start}"
         result: dict[datetime, tuple[float, float, float, float, float, float]] = {}
@@ -85,16 +106,24 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
                 float(row[1]), float(row[2]), float(row[3]), float(row[4]),
                 float(row[5]), float(row[6]),
             )
+        cache[cache_key] = result
+        self._option_candle_cache = cache
         return result
 
     def build_snapshots(
         self, start: date, end: date, progress: Callable[[int, int, str], None] | None = None,
+        expiry_mode: str = "weekly",
     ) -> list[OptionSnapshot]:
         if start > end:
             raise ValueError("Backtest start date must be on or before the end date")
-        expiries = [item for item in self.get_expiries() if start <= item <= end + timedelta(days=7)]
+        if expiry_mode not in {"weekly", "monthly"}:
+            raise ValueError("Expiry mode must be weekly or monthly")
+        all_expiries = self.get_expiries()
+        available = all_expiries if expiry_mode == "weekly" else monthly_expiries(all_expiries)
+        horizon = 7 if expiry_mode == "weekly" else 40
+        expiries = [item for item in available if start <= item <= end + timedelta(days=horizon)]
         if not expiries:
-            raise UpstoxAPIError("No expired NIFTY weekly contracts were available for this period")
+            raise UpstoxAPIError(f"No expired NIFTY {expiry_mode} contracts were available for this period")
         spot = self.spot_candles(start, end)
         if not spot:
             raise UpstoxAPIError("No historical NIFTY candles were returned")

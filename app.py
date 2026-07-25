@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -10,7 +11,7 @@ from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.backtest import NandiBacktester
 from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
-from nandi_oi.rsi_backtest import RSI2472Backtester
+from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAMES
 
 
 st.set_page_config(page_title="Nandi OI", page_icon="📈", layout="wide")
@@ -303,8 +304,60 @@ def backtest_lab() -> None:
 
 
 def rsi_backtest_lab() -> None:
-    header("RSI 24/72 Lab", "RSI(14) • ≤24 BUY CE • ≥72 BUY PE • paper research only")
-    st.info("This is a separate RSI strategy. It does not change Nandi V1 OI rules. Signals enter on the next five-minute candle with a 20% stop and 30% target.")
+    header("RSI Strategy Lab", "Editable RSI period and levels • multi-timeframe touch analysis")
+    st.info("The old 20% stop / 30% target is removed. RSI trades use a 5% premium stop; the target is the opposite editable RSI level. Nandi V1 OI remains unchanged.")
+
+    if "rsi_saved_strategies" not in st.session_state:
+        st.session_state.rsi_saved_strategies = {
+            "RSI 14 — 24/72": {"length": 14, "lower": 24.0, "upper": 72.0}
+        }
+
+    st.subheader("Strategy settings")
+    saved = st.session_state.rsi_saved_strategies
+    selected_name = st.selectbox("Load saved RSI strategy", list(saved))
+    selected = saved[selected_name]
+    strategy_name = st.text_input("Strategy name", value=selected_name)
+    first, second, third = st.columns(3)
+    length = int(first.number_input("RSI period", min_value=2, max_value=100, value=int(selected["length"]), step=1))
+    lower = float(second.number_input("Lower RSI level", min_value=0.0, max_value=99.0, value=float(selected["lower"]), step=1.0))
+    upper = float(third.number_input("Upper RSI level", min_value=1.0, max_value=100.0, value=float(selected["upper"]), step=1.0))
+    timeframes = st.multiselect(
+        "Timeframes to analyse",
+        list(TIMEFRAMES),
+        default=list(TIMEFRAMES),
+        format_func=lambda value: "1 hour" if value == 60 else f"{value} min",
+    )
+
+    save_col, download_col = st.columns(2)
+    if save_col.button("Save this RSI strategy", use_container_width=True):
+        if not strategy_name.strip():
+            st.error("Enter a strategy name.")
+        elif lower >= upper:
+            st.error("Lower RSI must be below upper RSI.")
+        else:
+            saved[strategy_name.strip()] = {"length": length, "lower": lower, "upper": upper}
+            st.session_state.rsi_saved_strategies = saved
+            st.success(f"Saved: {strategy_name.strip()}")
+    download_col.download_button(
+        "Download all saved strategies",
+        json.dumps(saved, indent=2).encode("utf-8"),
+        file_name="nandi_rsi_strategies.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    uploaded = st.file_uploader("Import saved RSI strategies", type=["json"])
+    if uploaded is not None and st.button("Import strategies"):
+        try:
+            imported = json.loads(uploaded.getvalue().decode("utf-8"))
+            for name, setup in imported.items():
+                RsiTouchAnalyzer(
+                    length=int(setup["length"]), lower=float(setup["lower"]),
+                    upper=float(setup["upper"]), timeframes=(5,),
+                )
+            st.session_state.rsi_saved_strategies.update(imported)
+            st.success("Strategies imported. Refresh this page to select them.")
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            st.error(f"Invalid strategy file: {exc}")
 
     period = st.selectbox("RSI test period", ["Single day", "One week", "One month", "Custom dates"])
     latest = date.today() - timedelta(days=1)
@@ -326,63 +379,76 @@ def rsi_backtest_lab() -> None:
     left.metric("Start date", start.strftime("%d %b %Y"))
     right.metric("End date", end.strftime("%d %b %Y"))
 
-    if st.button("Run RSI 24/72 Backtest", type="primary", use_container_width=True):
-        progress_bar = st.progress(0.0, text="Loading Upstox Plus historical data…")
-
-        def update_progress(done: int, total: int, label: str) -> None:
-            progress_bar.progress(done / max(total, 1), text=f"Loading {done}/{total}: {label}")
-
+    if st.button("Count RSI touches", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0, text="Loading one-minute NIFTY candles…")
         try:
+            if not timeframes:
+                raise ValueError("Select at least one timeframe")
             token = st.session_state.upstox_client.access_token
             client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
-            snapshots = client.build_snapshots(start, end, progress=update_progress)
-            result = RSI2472Backtester().run(snapshots)
-            st.session_state.rsi_backtest_result = result
-            progress_bar.progress(1.0, text="RSI backtest completed")
-            st.success("RSI 24/72 replay completed without placing any broker order.")
+            warmup_start = start - timedelta(days=45)
+            closes = client.spot_candles(warmup_start, end, interval_minutes=1)
+            result = RsiTouchAnalyzer(length, lower, upper, timeframes).run(closes, start, end)
+            progress_bar.progress(0.25, text="Loading five-minute option candles for trade replay…")
+            snapshots = client.build_snapshots(start, end)
+            trade_result = RsiLevelBacktester(length, lower, upper, stop_pct=0.05).run(snapshots)
+            st.session_state.rsi_touch_result = result
+            st.session_state.rsi_level_trade_result = trade_result
+            progress_bar.progress(1.0, text="RSI analysis completed")
+            st.success("Touches counted and five-minute option trades replayed.")
         except (UpstoxAPIError, ValueError) as exc:
             progress_bar.empty()
             st.error(str(exc))
 
-    result = st.session_state.get("rsi_backtest_result")
+    result = st.session_state.get("rsi_touch_result")
     if not result:
-        st.write("Run the RSI backtest to generate performance evidence.")
+        st.write("Choose your settings and run the analysis to count historical RSI touches.")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Trades", len(result.trades))
-    c2.metric("Win rate", f"{result.win_rate:.1f}%")
-    c3.metric("Net premium points", f"{result.net_points:+.2f}")
-    c4.metric("Maximum drawdown", f"{result.max_drawdown:.2f}")
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Wins", result.wins)
-    c6.metric("Losses", result.losses)
-    c7.metric("Snapshots replayed", result.snapshots)
-    c8.metric("No-entry observations", result.no_trade_decisions)
+    summary = pd.DataFrame(result.summary_rows())
+    st.subheader(f"RSI({result.length}) touch summary — {result.lower:g}/{result.upper:g}")
+    st.caption("A touch is counted only when RSI newly crosses into a zone. Zone-candle totals show how long RSI remained there.")
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Lower touches", int(summary["Lower touches"].sum()))
+    c2.metric("Upper touches", int(summary["Upper touches"].sum()))
+    c3.metric("All independent touches", int(summary["Total touches"].sum()))
 
-    if result.equity_curve:
-        st.subheader("RSI cumulative premium points")
-        st.line_chart(pd.DataFrame({"Cumulative points": result.equity_curve}))
-    rows = result.rows()
+    trade_result = st.session_state.get("rsi_level_trade_result")
+    if trade_result:
+        st.subheader("Five-minute option trade replay")
+        st.caption(
+            f"BUY CE at RSI ≤{result.lower:g}; exit at RSI ≥{result.upper:g}. "
+            f"BUY PE at RSI ≥{result.upper:g}; exit at RSI ≤{result.lower:g}. "
+            "Every trade also has a 5% premium stop. Entry occurs on the next five-minute candle."
+        )
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Trades", len(trade_result.trades))
+        t2.metric("Win rate", f"{trade_result.win_rate:.1f}%")
+        t3.metric("Net premium points", f"{trade_result.net_points:+.2f}")
+        t4.metric("Maximum drawdown", f"{trade_result.max_drawdown:.2f}")
+        trade_rows = trade_result.rows()
+        if trade_rows:
+            trade_frame = pd.DataFrame(trade_rows)
+            st.dataframe(trade_frame, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download RSI Trade CSV", trade_frame.to_csv(index=False).encode("utf-8"),
+                file_name=f"nandi_rsi_trades_{trade_result.start_date}_{trade_result.end_date}.csv",
+                mime="text/csv", use_container_width=True,
+            )
+
+    rows = result.touch_rows()
     if rows:
         frame = pd.DataFrame(rows)
-        frame["Result"] = frame["pnl_points"].apply(lambda value: "Win" if value > 0 else "Loss")
-        analysis = frame.groupby("action", as_index=False).agg(
-            Trades=("action", "size"), Wins=("Result", lambda values: (values == "Win").sum()),
-            Net_points=("pnl_points", "sum"), Average_points=("pnl_points", "mean"),
-        )
-        analysis["Win_rate_%"] = (analysis["Wins"] / analysis["Trades"] * 100).round(1)
-        st.subheader("CE versus PE performance")
-        st.dataframe(analysis, use_container_width=True, hide_index=True)
-        st.subheader("RSI historical trade ledger")
+        st.subheader("Every RSI touch")
         st.dataframe(frame, use_container_width=True, hide_index=True)
         st.download_button(
-            "Download RSI Backtest CSV", frame.to_csv(index=False).encode("utf-8"),
-            file_name=f"nandi_rsi_24_72_{result.start_date}_{result.end_date}.csv",
+            "Download RSI Touch CSV", frame.to_csv(index=False).encode("utf-8"),
+            file_name=f"nandi_rsi_touches_{result.start_date}_{result.end_date}.csv",
             mime="text/csv", use_container_width=True,
         )
     else:
-        st.warning("RSI did not produce a completed paper trade in this period.")
+        st.warning("No RSI touches occurred with these settings in the selected period.")
 
 
 def settings() -> None:
@@ -394,7 +460,8 @@ def settings() -> None:
     st.write("V1 snapshot requirement: 3")
     st.write("V1 approval score: 80/100 (quality score, not guaranteed probability)")
     st.write("V1 minimum directional lead: 20 points")
-    st.write("Paper risk: 20% stop / 30% target")
+    st.write("Nandi OI V1 paper risk: 20% stop / 30% target")
+    st.write("RSI Strategy Lab: 5% premium stop / opposite RSI level target")
 
 
 pages = {
@@ -403,7 +470,7 @@ pages = {
     "Paper Trades": paper_trades,
     "Daily Report": daily_report,
     "Backtest Lab": backtest_lab,
-    "RSI 24/72 Lab": rsi_backtest_lab,
+    "RSI Strategy Lab": rsi_backtest_lab,
     "Settings": settings,
 }
 if not st.session_state.logged_in:

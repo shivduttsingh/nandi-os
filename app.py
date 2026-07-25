@@ -10,6 +10,7 @@ from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.backtest import NandiBacktester
 from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
+from nandi_oi.rsi_backtest import RSI2472Backtester
 
 
 st.set_page_config(page_title="Nandi OI", page_icon="📈", layout="wide")
@@ -298,7 +299,90 @@ def backtest_lab() -> None:
             use_container_width=True,
         )
     else:
-        st.warning("The strategy correctly produced no approved entries in this three-month period.")
+        st.warning("The strategy produced no approved entries in the selected period.")
+
+
+def rsi_backtest_lab() -> None:
+    header("RSI 24/72 Lab", "RSI(14) • ≤24 BUY CE • ≥72 BUY PE • paper research only")
+    st.info("This is a separate RSI strategy. It does not change Nandi V1 OI rules. Signals enter on the next five-minute candle with a 20% stop and 30% target.")
+
+    period = st.selectbox("RSI test period", ["Single day", "One week", "One month", "Custom dates"])
+    latest = date.today() - timedelta(days=1)
+    if period == "Single day":
+        selected = st.date_input("RSI trading date", value=latest, max_value=latest)
+        start = end = selected
+    elif period == "One week":
+        end = st.date_input("RSI week ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=6)
+    elif period == "One month":
+        end = st.date_input("RSI month ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=29)
+    else:
+        first, second = st.columns(2)
+        start = first.date_input("RSI start date", value=latest - timedelta(days=29), max_value=latest)
+        end = second.date_input("RSI end date", value=latest, min_value=start, max_value=latest)
+
+    left, right = st.columns(2)
+    left.metric("Start date", start.strftime("%d %b %Y"))
+    right.metric("End date", end.strftime("%d %b %Y"))
+
+    if st.button("Run RSI 24/72 Backtest", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0, text="Loading Upstox Plus historical data…")
+
+        def update_progress(done: int, total: int, label: str) -> None:
+            progress_bar.progress(done / max(total, 1), text=f"Loading {done}/{total}: {label}")
+
+        try:
+            token = st.session_state.upstox_client.access_token
+            client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
+            snapshots = client.build_snapshots(start, end, progress=update_progress)
+            result = RSI2472Backtester().run(snapshots)
+            st.session_state.rsi_backtest_result = result
+            progress_bar.progress(1.0, text="RSI backtest completed")
+            st.success("RSI 24/72 replay completed without placing any broker order.")
+        except (UpstoxAPIError, ValueError) as exc:
+            progress_bar.empty()
+            st.error(str(exc))
+
+    result = st.session_state.get("rsi_backtest_result")
+    if not result:
+        st.write("Run the RSI backtest to generate performance evidence.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Trades", len(result.trades))
+    c2.metric("Win rate", f"{result.win_rate:.1f}%")
+    c3.metric("Net premium points", f"{result.net_points:+.2f}")
+    c4.metric("Maximum drawdown", f"{result.max_drawdown:.2f}")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Wins", result.wins)
+    c6.metric("Losses", result.losses)
+    c7.metric("Snapshots replayed", result.snapshots)
+    c8.metric("No-entry observations", result.no_trade_decisions)
+
+    if result.equity_curve:
+        st.subheader("RSI cumulative premium points")
+        st.line_chart(pd.DataFrame({"Cumulative points": result.equity_curve}))
+    rows = result.rows()
+    if rows:
+        frame = pd.DataFrame(rows)
+        frame["Result"] = frame["pnl_points"].apply(lambda value: "Win" if value > 0 else "Loss")
+        analysis = frame.groupby("action", as_index=False).agg(
+            Trades=("action", "size"), Wins=("Result", lambda values: (values == "Win").sum()),
+            Net_points=("pnl_points", "sum"), Average_points=("pnl_points", "mean"),
+        )
+        analysis["Win_rate_%"] = (analysis["Wins"] / analysis["Trades"] * 100).round(1)
+        st.subheader("CE versus PE performance")
+        st.dataframe(analysis, use_container_width=True, hide_index=True)
+        st.subheader("RSI historical trade ledger")
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download RSI Backtest CSV", frame.to_csv(index=False).encode("utf-8"),
+            file_name=f"nandi_rsi_24_72_{result.start_date}_{result.end_date}.csv",
+            mime="text/csv", use_container_width=True,
+        )
+    else:
+        st.warning("RSI did not produce a completed paper trade in this period.")
 
 
 def settings() -> None:
@@ -319,6 +403,7 @@ pages = {
     "Paper Trades": paper_trades,
     "Daily Report": daily_report,
     "Backtest Lab": backtest_lab,
+    "RSI 24/72 Lab": rsi_backtest_lab,
     "Settings": settings,
 }
 if not st.session_state.logged_in:

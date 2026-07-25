@@ -389,13 +389,41 @@ def rsi_backtest_lab() -> None:
             warmup_start = start - timedelta(days=45)
             closes = client.spot_candles(warmup_start, end, interval_minutes=1)
             result = RsiTouchAnalyzer(length, lower, upper, timeframes).run(closes, start, end)
-            progress_bar.progress(0.25, text="Loading five-minute option candles for trade replay…")
-            snapshots = client.build_snapshots(start, end)
-            trade_result = RsiLevelBacktester(length, lower, upper, stop_pct=0.05).run(snapshots)
+            st.session_state.rsi_trading_days = sorted({
+                timestamp.date() for timestamp in closes
+                if start <= timestamp.date() <= end
+            })
+            progress_bar.progress(0.20, text="Loading nearest-weekly option contracts…")
+
+            def weekly_progress(done: int, total: int, label: str) -> None:
+                progress_bar.progress(
+                    0.20 + 0.35 * done / max(total, 1),
+                    text=f"Weekly {done}/{total}: {label}",
+                )
+
+            weekly_snapshots = client.build_snapshots(
+                start, end, progress=weekly_progress, expiry_mode="weekly",
+            )
+            weekly_result = RsiLevelBacktester(length, lower, upper, stop_pct=0.05).run(weekly_snapshots)
+            progress_bar.progress(0.55, text="Loading nearest-monthly option contracts…")
+
+            def monthly_progress(done: int, total: int, label: str) -> None:
+                progress_bar.progress(
+                    0.55 + 0.35 * done / max(total, 1),
+                    text=f"Monthly {done}/{total}: {label}",
+                )
+
+            monthly_snapshots = client.build_snapshots(
+                start, end, progress=monthly_progress, expiry_mode="monthly",
+            )
+            monthly_result = RsiLevelBacktester(length, lower, upper, stop_pct=0.05).run(monthly_snapshots)
             st.session_state.rsi_touch_result = result
-            st.session_state.rsi_level_trade_result = trade_result
+            st.session_state.rsi_weekly_result = weekly_result
+            st.session_state.rsi_monthly_result = monthly_result
+            st.session_state.rsi_weekly_snapshots = weekly_snapshots
+            st.session_state.rsi_monthly_snapshots = monthly_snapshots
             progress_bar.progress(1.0, text="RSI analysis completed")
-            st.success("Touches counted and five-minute option trades replayed.")
+            st.success("Touches counted; nearest-weekly and nearest-monthly option trades replayed.")
         except (UpstoxAPIError, ValueError) as exc:
             progress_bar.empty()
             st.error(str(exc))
@@ -414,28 +442,96 @@ def rsi_backtest_lab() -> None:
     c2.metric("Upper touches", int(summary["Upper touches"].sum()))
     c3.metric("All independent touches", int(summary["Total touches"].sum()))
 
-    trade_result = st.session_state.get("rsi_level_trade_result")
-    if trade_result:
-        st.subheader("Five-minute option trade replay")
+    weekly_result = st.session_state.get("rsi_weekly_result")
+    monthly_result = st.session_state.get("rsi_monthly_result")
+    if weekly_result and monthly_result:
+        st.subheader("Weekly versus monthly option replay")
         st.caption(
             f"BUY CE at RSI ≤{result.lower:g}; exit at RSI ≥{result.upper:g}. "
             f"BUY PE at RSI ≥{result.upper:g}; exit at RSI ≤{result.lower:g}. "
-            "Every trade also has a 5% premium stop. Entry occurs on the next five-minute candle."
+            "RSI comes from NIFTY. Every option trade has a 5% premium stop. "
+            "Entry occurs on the next five-minute candle."
         )
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Trades", len(trade_result.trades))
-        t2.metric("Win rate", f"{trade_result.win_rate:.1f}%")
-        t3.metric("Net premium points", f"{trade_result.net_points:+.2f}")
-        t4.metric("Maximum drawdown", f"{trade_result.max_drawdown:.2f}")
-        trade_rows = trade_result.rows()
-        if trade_rows:
-            trade_frame = pd.DataFrame(trade_rows)
-            st.dataframe(trade_frame, use_container_width=True, hide_index=True)
-            st.download_button(
-                "Download RSI Trade CSV", trade_frame.to_csv(index=False).encode("utf-8"),
-                file_name=f"nandi_rsi_trades_{trade_result.start_date}_{trade_result.end_date}.csv",
-                mime="text/csv", use_container_width=True,
-            )
+        comparison = pd.DataFrame([
+            {
+                "Contract": "Nearest weekly", "Trades": len(weekly_result.trades),
+                "Wins": weekly_result.wins, "Win rate %": round(weekly_result.win_rate, 1),
+                "Net premium points": weekly_result.net_points,
+                "Maximum drawdown": weekly_result.max_drawdown,
+            },
+            {
+                "Contract": "Nearest monthly", "Trades": len(monthly_result.trades),
+                "Wins": monthly_result.wins, "Win rate %": round(monthly_result.win_rate, 1),
+                "Net premium points": monthly_result.net_points,
+                "Maximum drawdown": monthly_result.max_drawdown,
+            },
+        ])
+        st.dataframe(comparison, use_container_width=True, hide_index=True)
+
+        weekly_snapshots = st.session_state.get("rsi_weekly_snapshots", [])
+        monthly_snapshots = st.session_state.get("rsi_monthly_snapshots", [])
+        weekly_expiry = {item.timestamp.date(): item.expiry for item in weekly_snapshots}
+        monthly_expiry = {item.timestamp.date(): item.expiry for item in monthly_snapshots}
+        weekly_trades: dict[date, list] = {}
+        monthly_trades: dict[date, list] = {}
+        for trade in weekly_result.trades:
+            weekly_trades.setdefault(trade.opened_at.date(), []).append(trade)
+        for trade in monthly_result.trades:
+            monthly_trades.setdefault(trade.opened_at.date(), []).append(trade)
+
+        trading_days = st.session_state.get("rsi_trading_days", [])
+        daily_rows = []
+        for trading_day in trading_days:
+            week = weekly_trades.get(trading_day, [])
+            month = monthly_trades.get(trading_day, [])
+            daily_rows.append({
+                "Trading date": trading_day.isoformat(),
+                "Weekly expiry used": weekly_expiry.get(trading_day, "Unavailable"),
+                "Weekly setup": ", ".join(trade.action for trade in week) or "NO SETUP",
+                "Weekly trades": len(week),
+                "Weekly wins": sum(trade.pnl_points > 0 for trade in week),
+                "Weekly outcome": (
+                    "NO TRADE" if not week else
+                    "WIN" if sum(trade.pnl_points for trade in week) > 0 else
+                    "LOSS" if sum(trade.pnl_points for trade in week) < 0 else "FLAT"
+                ),
+                "Weekly exits": ", ".join(trade.exit_reason for trade in week) or "—",
+                "Weekly net points": round(sum(trade.pnl_points for trade in week), 2),
+                "Monthly expiry used": monthly_expiry.get(trading_day, "Unavailable"),
+                "Monthly setup": ", ".join(trade.action for trade in month) or "NO SETUP",
+                "Monthly trades": len(month),
+                "Monthly wins": sum(trade.pnl_points > 0 for trade in month),
+                "Monthly outcome": (
+                    "NO TRADE" if not month else
+                    "WIN" if sum(trade.pnl_points for trade in month) > 0 else
+                    "LOSS" if sum(trade.pnl_points for trade in month) < 0 else "FLAT"
+                ),
+                "Monthly exits": ", ".join(trade.exit_reason for trade in month) or "—",
+                "Monthly net points": round(sum(trade.pnl_points for trade in month), 2),
+            })
+        daily_frame = pd.DataFrame(daily_rows)
+        st.subheader("Daily contract and setup check")
+        st.caption("Every trading day is shown, including NO SETUP days. No trade is forced.")
+        st.dataframe(daily_frame, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download Daily Weekly/Monthly Report",
+            daily_frame.to_csv(index=False).encode("utf-8"),
+            file_name=f"nandi_rsi_daily_expiry_report_{result.start_date}_{result.end_date}.csv",
+            mime="text/csv", use_container_width=True,
+        )
+
+        with st.expander("Weekly trade ledger"):
+            weekly_rows = weekly_result.rows()
+            if weekly_rows:
+                st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No weekly-option trades occurred.")
+        with st.expander("Monthly trade ledger"):
+            monthly_rows = monthly_result.rows()
+            if monthly_rows:
+                st.dataframe(pd.DataFrame(monthly_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No monthly-option trades occurred.")
 
     rows = result.touch_rows()
     if rows:
@@ -456,7 +552,8 @@ def settings() -> None:
     st.code('[upstox]\naccess_token = "PASTE_YOUR_ANALYTICS_TOKEN_HERE"', language="toml")
     st.write("Add this to your Streamlit app Secrets. Never paste the token into source code or chat.")
     st.write("Underlying: `NSE_INDEX|Nifty 50`")
-    st.write("Expiry: `current_week` (automatic rollover)")
+    st.write("Live OI V1 expiry: `current_week` (automatic rollover)")
+    st.write("RSI historical comparison: nearest weekly and nearest monthly expiry")
     st.write("V1 snapshot requirement: 3")
     st.write("V1 approval score: 80/100 (quality score, not guaranteed probability)")
     st.write("V1 minimum directional lead: 20 points")

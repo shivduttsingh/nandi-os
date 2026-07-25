@@ -60,14 +60,16 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
     def _candles(payload: dict) -> list[list]:
         return list((payload.get("data") or {}).get("candles") or [])
 
-    def spot_candles(self, start: date, end: date) -> dict[datetime, float]:
+    def spot_candles(self, start: date, end: date, interval_minutes: int = 5) -> dict[datetime, float]:
+        if interval_minutes not in {1, 2, 3, 5, 10, 15, 30, 60}:
+            raise ValueError("Unsupported historical candle interval")
         key = quote(self.instrument_key, safe="")
         result: dict[datetime, float] = {}
         # Upstox caps 1–15 minute requests at one month, so fetch safe 28-day chunks.
         chunk_start = start
         while chunk_start <= end:
             chunk_end = min(end, chunk_start + timedelta(days=27))
-            url = f"https://api.upstox.com/v3/historical-candle/{key}/minutes/5/{chunk_end}/{chunk_start}"
+            url = f"https://api.upstox.com/v3/historical-candle/{key}/minutes/{interval_minutes}/{chunk_end}/{chunk_start}"
             for row in self._candles(self._get_url(url)):
                 timestamp = datetime.fromisoformat(row[0])
                 result[timestamp] = float(row[4])

@@ -15,6 +15,7 @@ from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.market_schedule import MarketSchedule
 from nandi_oi.paper import PaperJournal
 from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAMES
+from nandi_oi.store import NandiStore
 
 
 st.set_page_config(page_title="Nandi", page_icon="N", layout="wide", initial_sidebar_state="expanded")
@@ -111,6 +112,7 @@ def configured_market_schedule() -> MarketSchedule:
 
 
 MARKET_SCHEDULE = configured_market_schedule()
+STORE = NandiStore()
 
 APP_USERNAME: str | None = None
 APP_PASSWORD: str | None = None
@@ -119,10 +121,13 @@ try:
     APP_USERNAME = str(st.secrets["auth"]["username"])
     APP_PASSWORD = str(st.secrets["auth"]["password"])
 except Exception:
-    AUTH_CONFIGURATION_ERROR = (
-        "Authentication is not configured. Add auth.username and auth.password "
-        "to Streamlit Secrets before using Nandi."
-    )
+    APP_USERNAME = os.getenv("NANDI_AUTH_USERNAME") or None
+    APP_PASSWORD = os.getenv("NANDI_AUTH_PASSWORD") or None
+    if not APP_USERNAME or not APP_PASSWORD:
+        AUTH_CONFIGURATION_ERROR = (
+            "Authentication is not configured. Add auth.username and auth.password to Streamlit Secrets "
+            "or NANDI_AUTH_USERNAME and NANDI_AUTH_PASSWORD to local .env."
+        )
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -149,6 +154,7 @@ journal = PaperJournal()
 def capture() -> None:
     snapshot = st.session_state.upstox_client.fetch_snapshot()
     decision = st.session_state.oi_engine.add_snapshot(snapshot)
+    STORE.save_analysis(snapshot, decision, source="dashboard-manual")
     st.session_state.latest_snapshot = snapshot
     st.session_state.latest_decision = decision
     st.session_state.decision_log.append({
@@ -300,6 +306,30 @@ def command_center() -> None:
     trades = journal.trades_today()
     st.metric("Paper trades today", f"{len(trades)} / 3")
 
+    st.subheader("Always-on research status")
+    health = STORE.worker_status()
+    if not health:
+        st.info("No background worker has reported yet. The Streamlit cloud page is dashboard-only; start local Nandi to analyse while you are away.")
+    else:
+        heartbeat = datetime.fromisoformat(health["last_heartbeat"])
+        now = MARKET_SCHEDULE.status().observed_at.replace(tzinfo=None)
+        seconds_ago = max(0, int((now - heartbeat).total_seconds()))
+        w1, w2, w3, w4 = st.columns(4)
+        w1.metric("Worker", health["status"])
+        w2.metric("Market state", health["market_state"].replace("_", " "))
+        w3.metric("Last heartbeat", f"{seconds_ago}s ago")
+        w4.metric("Last snapshot", health["last_snapshot"][-8:] if health.get("last_snapshot") else "Waiting")
+        if health.get("last_error"):
+            st.error(f"Worker issue: {health['last_error']}")
+    latest = STORE.latest_analysis()
+    if latest:
+        st.caption("Latest saved analysis — collected by Nandi even when this dashboard was closed.")
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Saved action", latest["action"])
+        a2.metric("Saved NIFTY", f"{latest['spot']:,.2f}")
+        a3.metric("Setup quality", f"{latest['setup_quality']:.1f}/100")
+        a4.metric("Expiry", latest["expiry"] or "—")
+
 
 def live_engine() -> None:
     header("Live OI Engine", "Upstox NIFTY current-week chain • ATM ±5 strikes")
@@ -322,7 +352,7 @@ def live_engine() -> None:
         def auto_capture_panel() -> None:
             try:
                 capture()
-                st.caption(f"Last automatic capture: {datetime.now().strftime('%I:%M:%S %p')}")
+                st.caption(f"Last automatic capture: {MARKET_SCHEDULE.status().observed_at.strftime('%I:%M:%S %p IST')}")
             except UpstoxAPIError as exc:
                 st.error(str(exc))
         auto_capture_panel()
@@ -410,6 +440,35 @@ def daily_report() -> None:
         st.caption("Scores and confidence are recorded after each captured snapshot; this chart does not alter any prior decision.")
         st.line_chart(history_frame.set_index("time")[["bullish", "bearish", "confidence"]])
         st.dataframe(history_frame, use_container_width=True, hide_index=True)
+
+    st.subheader("Background analysis saved today")
+    saved_rows = STORE.recent_decisions(limit=1000, trading_day=MARKET_SCHEDULE.status().observed_at.date())
+    if saved_rows:
+        background = pd.DataFrame(saved_rows)
+        background["decided_at"] = pd.to_datetime(background["decided_at"])
+        chronological = background.sort_values("decided_at")
+        st.line_chart(chronological.set_index("decided_at")[["bullish_score", "bearish_score"]])
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Saved snapshots", len(background))
+        r2.metric("Approved setups", int((background["action"] != "NO TRADE").sum()))
+        r3.metric("WAIT decisions", int((background["action"] == "NO TRADE").sum()))
+        st.dataframe(background, use_container_width=True, hide_index=True)
+    else:
+        st.info("No background analysis has been saved for this date.")
+
+    st.subheader("Nandi alerts")
+    alerts = STORE.recent_alerts(limit=50)
+    if alerts:
+        st.dataframe(pd.DataFrame(alerts), use_container_width=True, hide_index=True)
+    else:
+        st.info("No approved-setup or daily-report alerts have been recorded yet.")
+
+    saved_report = STORE.latest_daily_report()
+    st.subheader("Latest automatic closing report")
+    if saved_report:
+        st.success(saved_report["summary"])
+    else:
+        st.info("The local worker creates this only after an NSE market session closes.")
 
 
 def backtest_lab() -> None:
@@ -793,7 +852,7 @@ else:
         st.divider()
         st.caption("RESEARCH STATUS")
         st.success("Paper mode active")
-        st.caption(datetime.now().strftime("%d %b %Y · %I:%M %p"))
+        st.caption(MARKET_SCHEDULE.status().observed_at.strftime("%d %b %Y · %I:%M %p IST"))
         if st.button("Logout", use_container_width=True):
             st.session_state.logged_in = False
             st.rerun()

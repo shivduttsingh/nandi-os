@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Iterable, Mapping
 
 from .backtest import BacktestResult, NandiBacktester
+from .evidence_backtest import EvidenceBacktester
 from .models import OptionSnapshot
 from .rsi_backtest import RsiLevelBacktester, RsiTouchResult, RsiTouchAnalyzer, TIMEFRAMES
 
@@ -132,7 +133,13 @@ class UnifiedBacktester:
         if not monthly:
             raise ValueError("No nearest-monthly historical snapshots were available")
         configs = self._configs(rsi_strategies)
+        evidence_runs = EvidenceBacktester().run(weekly).runs
         runs: list[UnifiedStrategyRun] = [
+            UnifiedStrategyRun(
+                item.name, "Nearest weekly evidence check", item.rules, item.result,
+            )
+            for item in evidence_runs
+        ] + [
             UnifiedStrategyRun(
                 "Nandi OI V1", "Nearest weekly", self.OI_RULES,
                 NandiBacktester(stop_pct=0.20, target_pct=0.30).run(weekly),

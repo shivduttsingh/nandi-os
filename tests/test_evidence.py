@@ -22,7 +22,7 @@ def test_live_evidence_explains_oi_premium_and_market_structure():
     evidence = live_evidence(snapshot, decision)
 
     assert evidence["oi"][0]["Activity"] == "SHORT COVERING"
-    assert "directional" in evidence["oi"][0]["Explanation"]
+    assert "short positions" in evidence["oi"][0]["Explanation"]
     assert evidence["premium"][0]["Contract"] == "ATM CE"
     assert evidence["structure"][0]["Structure"] == "Upward breakout"
     assert evidence["score"][0]["Score"] == 85

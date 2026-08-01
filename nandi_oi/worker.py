@@ -6,8 +6,10 @@ import os
 import signal
 import time
 from datetime import datetime
+from typing import Any
 
 from .alerts import AlertSink, WebhookAlertSink
+from .configuration import is_configured_value
 from .engine import NandiOIEngine
 from .market_schedule import IST, MarketSchedule
 from .models import Decision, OptionSnapshot
@@ -35,7 +37,7 @@ class NandiWorker:
         self.schedule = schedule or schedule_from_environment()
         self.interval_seconds = max(10, interval_seconds or int(os.getenv("NANDI_CAPTURE_SECONDS", "30")))
         self.running = True
-        self.last_action = "NO TRADE"
+        self.worker_name = "nandi-live"
 
     @staticmethod
     def _explanation(snapshot: OptionSnapshot, decision: Decision) -> str:
@@ -54,13 +56,16 @@ class NandiWorker:
         decision = self.engine.add_snapshot(snapshot)
         decision_id = self.store.save_analysis(snapshot, decision, source="background-worker")
         self.store.heartbeat("RUNNING", "MARKET_OPEN", last_snapshot=snapshot.timestamp, now=local_now.replace(tzinfo=None))
-        if decision.approved and decision.action != self.last_action:
+        previous_action = self.store.worker_last_action(self.worker_name)
+        if decision.approved and decision.action != previous_action:
             title = f"Nandi approved {decision.action}"
             message = self._explanation(snapshot, decision)
             delivery = self.alert_sink.send(title, message, "TRADE_SETUP")
             self.store.record_alert("TRADE_SETUP", title, message, decision_id, delivered=delivery.delivered,
                                     delivery_error=delivery.error, now=local_now.replace(tzinfo=None))
-        self.last_action = decision.action
+        self.store.set_worker_last_action(
+            decision.action, worker_name=self.worker_name, now=local_now.replace(tzinfo=None),
+        )
         return snapshot, decision
 
     def stop(self, *_args) -> None:
@@ -112,13 +117,46 @@ class NandiWorker:
         self.store.heartbeat("STOPPED", self.schedule.status(stopped_at).state, now=stopped_at.replace(tzinfo=None))
 
 
+def preflight_report(now: datetime | None = None) -> tuple[bool, list[dict[str, Any]]]:
+    """Check the local worker setup without contacting Upstox or exposing secrets."""
+    schedule = schedule_from_environment()
+    status = schedule.status(now or datetime.now(IST))
+    checks: list[dict[str, Any]] = []
+    try:
+        store = NandiStore()
+        store.worker_status()
+        checks.append({"Check": "Local database", "Status": "READY", "Detail": str(store.path)})
+    except Exception as exc:
+        checks.append({"Check": "Local database", "Status": "ERROR", "Detail": str(exc)})
+    token_ready = is_configured_value(os.getenv("UPSTOX_ACCESS_TOKEN", ""))
+    checks.append({
+        "Check": "Upstox analytics token",
+        "Status": "READY" if token_ready else "NEEDS ACTION",
+        "Detail": "Configured" if token_ready else "Add a real read-only token to UPSTOX_ACCESS_TOKEN in .env.",
+    })
+    checks.append({
+        "Check": "NSE schedule",
+        "Status": status.state,
+        "Detail": f"{status.reason} Next session: {status.next_open.strftime('%d %b %Y %I:%M %p IST')}.",
+    })
+    return all(item["Status"] != "ERROR" for item in checks) and token_ready, checks
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Nandi always-on paper research worker")
     parser.add_argument("--once", action="store_true", help="Capture one snapshot regardless of market hours")
+    parser.add_argument("--check", action="store_true", help="Check local setup without requesting market data")
     parser.add_argument("--interval", type=int, default=None, help="Seconds between live snapshots")
     args = parser.parse_args()
     logging.basicConfig(level=os.getenv("NANDI_LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if args.check:
+        ready, checks = preflight_report()
+        for check in checks:
+            LOGGER.info("%s: %s — %s", check["Check"], check["Status"], check["Detail"])
+        if not ready:
+            raise SystemExit(1)
+        return
     worker = NandiWorker(interval_seconds=args.interval)
     if args.once:
         snapshot, decision = worker.run_once()

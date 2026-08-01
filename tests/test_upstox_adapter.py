@@ -31,3 +31,9 @@ def test_adapter_uses_actual_snapshot_deltas_after_first_call():
     assert two.legs[0].change_ltp == 5
     assert two.spot_change == 10
     assert two.recent_high == 25010
+
+
+def test_adapter_defaults_capture_time_to_ist_clock():
+    client = UpstoxOptionChainClient(access_token="not-used")
+    snapshot = client.parse_chain([row(25000, 25010, 900, 105, 1100, 95)])
+    assert snapshot.timestamp.tzinfo is None

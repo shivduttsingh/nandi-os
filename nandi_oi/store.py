@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS worker_health (
     last_error TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS worker_state (
+    worker_name TEXT PRIMARY KEY,
+    last_action TEXT NOT NULL DEFAULT 'NO TRADE',
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -182,6 +188,28 @@ class NandiStore:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM worker_health WHERE worker_name = ?", (worker_name,)).fetchone()
         return dict(row) if row else None
+
+    def worker_last_action(self, worker_name: str = "nandi-live") -> str:
+        """Read the last decision so a restart does not repeat an unchanged alert."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT last_action FROM worker_state WHERE worker_name = ?", (worker_name,)
+            ).fetchone()
+        return str(row["last_action"]) if row else "NO TRADE"
+
+    def set_worker_last_action(self, action: str, *, worker_name: str = "nandi-live",
+                               now: datetime | None = None) -> None:
+        updated_at = (now or datetime.now()).isoformat(timespec="seconds")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO worker_state(worker_name, last_action, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(worker_name) DO UPDATE SET
+                    last_action=excluded.last_action, updated_at=excluded.updated_at
+                """,
+                (worker_name, action, updated_at),
+            )
 
     def record_alert(self, level: str, title: str, message: str, decision_id: int | None = None,
                      *, delivered: bool = False, delivery_error: str = "", now: datetime | None = None) -> int:

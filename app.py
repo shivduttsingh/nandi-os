@@ -8,6 +8,8 @@ import pandas as pd
 import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
+from nandi_oi.auth import CredentialConfigurationError, LoginLockout
+from nandi_oi.evidence import decision_history_rows, expiry_comparison_rows, live_evidence
 from nandi_oi.backtest import NandiBacktester
 from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_oi.paper import PaperJournal
@@ -17,21 +19,32 @@ from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAM
 st.set_page_config(page_title="Nandi OI", page_icon="📈", layout="wide")
 st.markdown("""
 <style>
-.stApp {background: linear-gradient(135deg,#ffffff 0%,#f4fff7 55%,#eaf8ef 100%)}
-section[data-testid="stSidebar"] {background:#fff;border-right:1px solid #dcebe1}
-div[data-testid="stMetric"] {background:#fff;border:1px solid #dcebe1;border-radius:16px;padding:14px}
+:root { --nandi-green:#137a46; --nandi-green-dark:#075c32; --nandi-mint:#eaf8ef; --nandi-line:#d8e9df; }
+.stApp { background: linear-gradient(135deg, #ffffff 0%, #f6fcf8 58%, #eaf8ef 100%); color:#173226; }
+section[data-testid="stSidebar"] { background:#ffffff; border-right:1px solid var(--nandi-line); }
+section[data-testid="stSidebar"] h1 { color:var(--nandi-green-dark); }
+div[data-testid="stMetric"] { background:#ffffff; border:1px solid var(--nandi-line); border-radius:14px; padding:14px; box-shadow:0 4px 16px rgba(19,122,70,.06); }
+div[data-testid="stMetric"] label { color:#52705e; }
+.stButton > button[kind="primary"] { background:var(--nandi-green); border-color:var(--nandi-green); }
+.stButton > button[kind="primary"]:hover { background:var(--nandi-green-dark); border-color:var(--nandi-green-dark); }
+[data-testid="stDataFrame"] { border:1px solid var(--nandi-line); border-radius:12px; overflow:hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+APP_USERNAME: str | None = None
+APP_PASSWORD: str | None = None
+AUTH_CONFIGURATION_ERROR = ""
 try:
-    APP_USERNAME = st.secrets["auth"]["username"]
-    APP_PASSWORD = st.secrets["auth"]["password"]
+    APP_USERNAME = str(st.secrets["auth"]["username"])
+    APP_PASSWORD = str(st.secrets["auth"]["password"])
 except Exception:
-    APP_USERNAME = "admin"
-    APP_PASSWORD = "admin"
+    AUTH_CONFIGURATION_ERROR = (
+        "Authentication is not configured. Add auth.username and auth.password "
+        "to Streamlit Secrets before using Nandi."
+    )
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -64,6 +77,7 @@ def capture() -> None:
         "time": snapshot.timestamp.isoformat(timespec="seconds"), "spot": snapshot.spot,
         "bullish": decision.bullish_score, "bearish": decision.bearish_score,
         "decision": decision.action, "confidence": decision.confidence,
+        "reasons": " | ".join(decision.reasons or decision.blockers),
     })
 
 
@@ -82,16 +96,60 @@ def login_page() -> None:
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Sign In", use_container_width=True)
             if submitted:
-                if username.strip() == APP_USERNAME and password == APP_PASSWORD:
-                    st.session_state.logged_in = True
-                    st.rerun()
+                try:
+                    result = LoginLockout(st.session_state).authenticate(
+                        username, password, APP_USERNAME, APP_PASSWORD,
+                    )
+                except CredentialConfigurationError:
+                    st.error(AUTH_CONFIGURATION_ERROR)
                 else:
-                    st.error("Invalid username or password")
+                    if result.authenticated:
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    elif result.locked:
+                        minutes = max(1, (result.retry_after_seconds + 59) // 60)
+                        st.error(f"Too many failed attempts. Try again in about {minutes} minute(s).")
+                    else:
+                        st.error(
+                            "Invalid username or password. "
+                            f"{result.attempts_remaining} attempt(s) remaining."
+                        )
+            if AUTH_CONFIGURATION_ERROR:
+                st.warning(AUTH_CONFIGURATION_ERROR)
 
 
 def header(title: str, subtitle: str) -> None:
     st.title(title)
     st.caption(subtitle)
+
+
+
+def evidence_dashboard(snapshot, decision) -> None:
+    """Render explainable charts from the already-computed OI V1 decision."""
+    evidence = live_evidence(snapshot, decision)
+    oi_tab, premium_tab, structure_tab, score_tab = st.tabs(
+        ["OI activity", "Option premium", "NIFTY structure", "Decision score"]
+    )
+    with oi_tab:
+        st.caption("Every OI activity label is derived from the existing change-in-OI and change-in-premium values.")
+        oi_frame = pd.DataFrame(evidence["oi"])
+        st.bar_chart(oi_frame.pivot(index="Strike", columns="Side", values="OI change"))
+        st.dataframe(oi_frame, use_container_width=True, hide_index=True)
+    with premium_tab:
+        st.caption("ATM premiums validate whether the selected option side is gaining momentum with usable liquidity.")
+        premium_frame = pd.DataFrame(evidence["premium"])
+        if not premium_frame.empty:
+            st.bar_chart(premium_frame.set_index("Contract")[["Premium", "Premium change"]])
+            st.dataframe(premium_frame, use_container_width=True, hide_index=True)
+    with structure_tab:
+        structure_frame = pd.DataFrame(evidence["structure"])
+        st.bar_chart(structure_frame.set_index("Structure")[["Spot", "Recent high", "Recent low"]])
+        st.dataframe(structure_frame, use_container_width=True, hide_index=True)
+    with score_tab:
+        st.caption("Scores are displayed for explanation only; OI V1 approval thresholds and weights are unchanged.")
+        score_frame = pd.DataFrame(evidence["score"])
+        st.bar_chart(score_frame.set_index("Evidence"))
+        st.dataframe(score_frame, use_container_width=True, hide_index=True)
 
 
 def command_center() -> None:
@@ -154,6 +212,8 @@ def live_engine() -> None:
     frame = pd.DataFrame(rows)
     nearest = sorted(frame.Strike.unique(), key=lambda x: abs(x - snapshot.spot))[:11]
     st.dataframe(frame[frame.Strike.isin(nearest)].sort_values(["Strike", "Side"]), use_container_width=True, hide_index=True)
+    st.subheader("Evidence behind this decision")
+    evidence_dashboard(snapshot, decision)
 
 
 def paper_trades() -> None:
@@ -202,7 +262,11 @@ def daily_report() -> None:
     c3.metric("Net premium points", f"{sum(x.pnl_points for x in closed):.2f}")
     c4.metric("No-trade decisions", sum(x["decision"] == "NO TRADE" for x in st.session_state.decision_log))
     if st.session_state.decision_log:
-        st.dataframe(pd.DataFrame(st.session_state.decision_log), use_container_width=True, hide_index=True)
+        history_frame = pd.DataFrame(decision_history_rows(st.session_state.decision_log))
+        st.subheader("Decision history")
+        st.caption("Scores and confidence are recorded after each captured snapshot; this chart does not alter any prior decision.")
+        st.line_chart(history_frame.set_index("time")[["bullish", "bearish", "confidence"]])
+        st.dataframe(history_frame, use_container_width=True, hide_index=True)
 
 
 def backtest_lab() -> None:
@@ -437,6 +501,8 @@ def rsi_backtest_lab() -> None:
     st.subheader(f"RSI({result.length}) touch summary — {result.lower:g}/{result.upper:g}")
     st.caption("A touch is counted only when RSI newly crosses into a zone. Zone-candle totals show how long RSI remained there.")
     st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.caption("Touch counts are shown by timeframe to make the RSI evidence comparable before a replay is evaluated.")
+    st.bar_chart(summary.set_index("Timeframe")[["Lower touches", "Upper touches", "Total touches"]])
     c1, c2, c3 = st.columns(3)
     c1.metric("Lower touches", int(summary["Lower touches"].sum()))
     c2.metric("Upper touches", int(summary["Upper touches"].sum()))
@@ -466,7 +532,10 @@ def rsi_backtest_lab() -> None:
                 "Maximum drawdown": monthly_result.max_drawdown,
             },
         ])
+        comparison = pd.DataFrame(expiry_comparison_rows(weekly_result, monthly_result))
         st.dataframe(comparison, use_container_width=True, hide_index=True)
+        st.caption("Weekly and monthly results use the same RSI signal settings. Differences reflect contract selection and replay data, not changed strategy rules.")
+        st.bar_chart(comparison.set_index("Contract")[["Win rate %", "Net premium points", "Maximum drawdown"]])
 
         weekly_snapshots = st.session_state.get("rsi_weekly_snapshots", [])
         monthly_snapshots = st.session_state.get("rsi_monthly_snapshots", [])

@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 
 
@@ -36,8 +34,12 @@ def test_credentials_must_be_configured_and_success_clears_failures():
     lockout = LoginLockout({}, max_attempts=2, lockout_seconds=60)
     now = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
-    with pytest.raises(CredentialConfigurationError):
+    try:
         lockout.authenticate("nandi", "secret", None, None, now)
+    except CredentialConfigurationError:
+        pass
+    else:
+        raise AssertionError("Expected missing credentials to be rejected")
 
     lockout.authenticate("nandi", "wrong", "nandi", "secret", now)
     result = lockout.authenticate("nandi", "secret", "nandi", "secret", now)

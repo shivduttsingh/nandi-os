@@ -1,0 +1,25 @@
+services:
+  dashboard:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NANDI_DB_PATH: /app/data/nandi.db
+    ports:
+      - "8501:8501"
+    volumes:
+      - nandi_data:/app/data
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    env_file: .env
+    environment:
+      NANDI_DB_PATH: /app/data/nandi.db
+      TZ: Asia/Kolkata
+    volumes:
+      - nandi_data:/app/data
+
+volumes:
+  nandi_data:

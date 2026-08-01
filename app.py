@@ -518,20 +518,6 @@ def rsi_backtest_lab() -> None:
             "RSI comes from NIFTY. Every option trade has a 5% premium stop. "
             "Entry occurs on the next five-minute candle."
         )
-        comparison = pd.DataFrame([
-            {
-                "Contract": "Nearest weekly", "Trades": len(weekly_result.trades),
-                "Wins": weekly_result.wins, "Win rate %": round(weekly_result.win_rate, 1),
-                "Net premium points": weekly_result.net_points,
-                "Maximum drawdown": weekly_result.max_drawdown,
-            },
-            {
-                "Contract": "Nearest monthly", "Trades": len(monthly_result.trades),
-                "Wins": monthly_result.wins, "Win rate %": round(monthly_result.win_rate, 1),
-                "Net premium points": monthly_result.net_points,
-                "Maximum drawdown": monthly_result.max_drawdown,
-            },
-        ])
         comparison = pd.DataFrame(expiry_comparison_rows(weekly_result, monthly_result))
         st.dataframe(comparison, use_container_width=True, hide_index=True)
         st.caption("Weekly and monthly results use the same RSI signal settings. Differences reflect contract selection and replay data, not changed strategy rules.")

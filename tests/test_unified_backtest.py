@@ -31,6 +31,11 @@ def test_unified_backtest_runs_oi_and_every_saved_rsi_variant():
         one_minute_closes={start + timedelta(minutes=index): 100 + index for index in range(30)},
     )
     assert [(run.strategy, run.contract) for run in result.runs] == [
+        ("OI flow", "Nearest weekly evidence check"),
+        ("NIFTY price structure", "Nearest weekly evidence check"),
+        ("OI-wall movement", "Nearest weekly evidence check"),
+        ("Option premium and liquidity", "Nearest weekly evidence check"),
+        ("Three-snapshot OI persistence", "Nearest weekly evidence check"),
         ("Nandi OI V1", "Nearest weekly"),
         ("RSI 5 — 30/70", "Nearest weekly"),
         ("RSI 5 — 30/70", "Nearest monthly"),
@@ -39,6 +44,8 @@ def test_unified_backtest_runs_oi_and_every_saved_rsi_variant():
     ]
     assert len(result.rsi_touch_rows()) == 4
     assert {row["Strategy"] for row in result.summary_rows()} == {
+        "OI flow", "NIFTY price structure", "OI-wall movement",
+        "Option premium and liquidity", "Three-snapshot OI persistence",
         "Nandi OI V1", "RSI 5 — 30/70", "RSI 6 — 25/75",
     }
 

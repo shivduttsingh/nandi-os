@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .configuration import is_configured_value
+from .market_schedule import IST
 from .models import OptionLeg, OptionSnapshot
 
 
@@ -36,8 +38,10 @@ class UpstoxOptionChainClient:
         self._prior_spots: deque[float] = deque(maxlen=20)
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        if not self.access_token:
-            raise UpstoxAPIError("UPSTOX_ACCESS_TOKEN is missing")
+        if not is_configured_value(self.access_token):
+            raise UpstoxAPIError(
+                "UPSTOX_ACCESS_TOKEN is missing or still contains the sample placeholder"
+            )
         request = Request(
             f"{self.BASE_URL}{path}?{urlencode(params)}",
             headers={
@@ -116,7 +120,10 @@ class UpstoxOptionChainClient:
 
         self._prior_spots.append(spot)
         return OptionSnapshot(
-            timestamp=timestamp or datetime.now(),
+            # Upstox responses do not provide a capture timestamp.  Nandi's
+            # displayed and stored session time is always IST, not the cloud
+            # server's local timezone.
+            timestamp=timestamp or datetime.now(IST).replace(tzinfo=None),
             spot=spot,
             spot_change=spot - prior_spot,
             recent_high=recent_high,

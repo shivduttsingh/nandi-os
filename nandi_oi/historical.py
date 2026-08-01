@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Callable
 from urllib.parse import quote
 
+from .configuration import is_configured_value
 from .models import OptionLeg, OptionSnapshot
 from .upstox import UpstoxAPIError, UpstoxOptionChainClient
 
@@ -53,8 +54,10 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
         from urllib.error import HTTPError, URLError
         from urllib.request import Request, urlopen
 
-        if not self.access_token:
-            raise UpstoxAPIError("UPSTOX_ACCESS_TOKEN is missing")
+        if not is_configured_value(self.access_token):
+            raise UpstoxAPIError(
+                "UPSTOX_ACCESS_TOKEN is missing or still contains the sample placeholder"
+            )
         request = Request(url, headers={
             "Accept": "application/json", "Authorization": f"Bearer {self.access_token}",
             "User-Agent": "Nandi-OI-Research/1.0",

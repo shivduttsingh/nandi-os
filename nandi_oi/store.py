@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     maximum_quality REAL NOT NULL,
     summary TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rsi_strategies (
+    name TEXT PRIMARY KEY,
+    length INTEGER NOT NULL,
+    lower_level REAL NOT NULL,
+    upper_level REAL NOT NULL,
+    saved_at TEXT NOT NULL
+);
 """
 
 
@@ -275,3 +283,37 @@ class NandiStore:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM daily_reports ORDER BY trading_date DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+
+    def rsi_strategies(self) -> dict[str, dict[str, float | int]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT name, length, lower_level, upper_level FROM rsi_strategies ORDER BY name"
+            ).fetchall()
+        return {
+            str(row["name"]): {
+                "length": int(row["length"]),
+                "lower": float(row["lower_level"]),
+                "upper": float(row["upper_level"]),
+            }
+            for row in rows
+        }
+
+    def save_rsi_strategy(self, name: str, length: int, lower: float, upper: float,
+                          *, now: datetime | None = None) -> None:
+        label = name.strip()
+        if not label:
+            raise ValueError("RSI strategy name is required")
+        if not 2 <= int(length) <= 100 or not 0 <= float(lower) < float(upper) <= 100:
+            raise ValueError("Invalid RSI strategy settings")
+        saved_at = (now or datetime.now()).isoformat(timespec="seconds")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rsi_strategies(name, length, lower_level, upper_level, saved_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    length=excluded.length, lower_level=excluded.lower_level,
+                    upper_level=excluded.upper_level, saved_at=excluded.saved_at
+                """,
+                (label, int(length), float(lower), float(upper), saved_at),
+            )

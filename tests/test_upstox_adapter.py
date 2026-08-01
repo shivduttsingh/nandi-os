@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from nandi_oi.upstox import UpstoxOptionChainClient
+from nandi_oi.upstox import UpstoxAPIError, UpstoxOptionChainClient
 
 
 def row(strike, spot, ce_oi, ce_ltp, pe_oi, pe_ltp):
@@ -37,3 +37,13 @@ def test_adapter_defaults_capture_time_to_ist_clock():
     client = UpstoxOptionChainClient(access_token="not-used")
     snapshot = client.parse_chain([row(25000, 25010, 900, 105, 1100, 95)])
     assert snapshot.timestamp.tzinfo is None
+
+
+def test_sample_token_is_rejected_before_any_network_request():
+    client = UpstoxOptionChainClient(access_token="PASTE_YOUR_ANALYTICS_TOKEN_HERE")
+    try:
+        client.fetch_raw_chain()
+    except UpstoxAPIError as exc:
+        assert "sample placeholder" in str(exc)
+    else:
+        raise AssertionError("Expected a sample token to be rejected")

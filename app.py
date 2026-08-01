@@ -670,8 +670,9 @@ def backtest_lab() -> None:
 def unified_backtest_lab() -> None:
     header("Unified Backtest", "Every implemented Nandi strategy • one comparable historical report")
     st.info(
-        "This runs Nandi OI V1 once on its nearest-weekly chain and every selected saved RSI setup on both "
-        "nearest-weekly and nearest-monthly contracts. Each strategy stays separate; Nandi does not invent a combined P&L."
+        "This first tests each OI evidence part separately—OI flow, price structure, OI walls, option premium/liquidity "
+        "and persistence—then tests the final Nandi OI V1 rule and every selected saved RSI setup. "
+        "Each strategy stays separate; Nandi does not invent a combined P&L."
     )
     st.caption(
         "Historical option data is replayed as five-minute snapshots without future-data access. "
@@ -752,7 +753,7 @@ def unified_backtest_lab() -> None:
 
     result = st.session_state.get("unified_backtest_result")
     if not result:
-        st.write("Run the full replay to compare OI V1 and every saved RSI setup in one report.")
+        st.write("Run the full replay to compare every OI evidence gate, final OI V1 and every saved RSI setup in one report.")
         return
 
     summary = pd.DataFrame(result.summary_rows())

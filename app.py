@@ -9,6 +9,7 @@ import streamlit as st
 
 from nandi_oi import NandiOIEngine, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
+from nandi_oi.configuration import is_configured_value
 from nandi_oi.evidence import decision_history_rows, expiry_comparison_rows, live_evidence
 from nandi_oi.backtest import NandiBacktester
 from nandi_oi.historical import UpstoxHistoricalClient
@@ -83,6 +84,10 @@ button[data-baseweb="tab"][aria-selected="true"] { background:var(--nandi-green-
 .nandi-session-title { font-size:1rem; font-weight:760; color:var(--nandi-ink); margin:.08rem 0; }
 .nandi-session-copy { color:var(--nandi-muted); font-size:.86rem; }
 .nandi-session-time { color:var(--nandi-green-dark); text-align:right; font-size:.78rem; font-weight:760; white-space:nowrap; }
+.nandi-setup-step { border:1px solid var(--nandi-line); border-radius:13px; padding:1rem 1.05rem; background:#fff; min-height:125px; }
+.nandi-setup-number { color:var(--nandi-green); font-weight:850; font-size:.72rem; letter-spacing:.1em; }
+.nandi-setup-title { color:var(--nandi-ink); font-weight:760; margin:.22rem 0; }
+.nandi-setup-copy { color:var(--nandi-muted); font-size:.85rem; }
 @media (max-width: 760px) { .nandi-session-card { align-items:flex-start; flex-direction:column; } .nandi-session-time { text-align:left; } }
 @media (max-width: 760px) {
   .nandi-hero { padding:1.25rem; }
@@ -118,14 +123,22 @@ APP_USERNAME: str | None = None
 APP_PASSWORD: str | None = None
 AUTH_CONFIGURATION_ERROR = ""
 try:
-    APP_USERNAME = str(st.secrets["auth"]["username"])
-    APP_PASSWORD = str(st.secrets["auth"]["password"])
+    secret_username = str(st.secrets["auth"]["username"])
+    secret_password = str(st.secrets["auth"]["password"])
+    if is_configured_value(secret_username) and is_configured_value(secret_password):
+        APP_USERNAME = secret_username
+        APP_PASSWORD = secret_password
 except Exception:
-    APP_USERNAME = os.getenv("NANDI_AUTH_USERNAME") or None
-    APP_PASSWORD = os.getenv("NANDI_AUTH_PASSWORD") or None
-    if not APP_USERNAME or not APP_PASSWORD:
+    pass
+if not APP_USERNAME or not APP_PASSWORD:
+    local_username = os.getenv("NANDI_AUTH_USERNAME", "")
+    local_password = os.getenv("NANDI_AUTH_PASSWORD", "")
+    if is_configured_value(local_username) and is_configured_value(local_password):
+        APP_USERNAME = local_username
+        APP_PASSWORD = local_password
+    else:
         AUTH_CONFIGURATION_ERROR = (
-            "Authentication is not configured. Add auth.username and auth.password to Streamlit Secrets "
+            "Authentication is not configured. Add real auth.username and auth.password values to Streamlit Secrets "
             "or NANDI_AUTH_USERNAME and NANDI_AUTH_PASSWORD to local .env."
         )
 
@@ -137,10 +150,13 @@ if "oi_engine" not in st.session_state:
 if "upstox_client" not in st.session_state:
     token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
     try:
-        token = token or st.secrets.get("upstox", {}).get("access_token", "")
+        if not is_configured_value(token):
+            token = str(st.secrets.get("upstox", {}).get("access_token", ""))
     except Exception:
         pass
-    st.session_state.upstox_client = UpstoxOptionChainClient(access_token=token)
+    st.session_state.upstox_client = UpstoxOptionChainClient(
+        access_token=token if is_configured_value(token) else ""
+    )
 if "latest_snapshot" not in st.session_state:
     st.session_state.latest_snapshot = None
 if "latest_decision" not in st.session_state:
@@ -252,9 +268,8 @@ def market_session_panel():
 
 
 
-def evidence_dashboard(snapshot, decision) -> None:
-    """Render explainable charts from the already-computed OI V1 decision."""
-    evidence = live_evidence(snapshot, decision)
+def evidence_dashboard_data(evidence: dict) -> None:
+    """Render stored or live evidence without changing the strategy decision."""
     oi_tab, premium_tab, structure_tab, score_tab = st.tabs(
         ["OI activity", "Option premium", "NIFTY structure", "Decision score"]
     )
@@ -280,16 +295,52 @@ def evidence_dashboard(snapshot, decision) -> None:
         st.dataframe(score_frame, use_container_width=True, hide_index=True)
 
 
+def evidence_dashboard(snapshot, decision) -> None:
+    """Render explainable charts from the already-computed OI V1 decision."""
+    evidence_dashboard_data(live_evidence(snapshot, decision))
+
+
+def saved_decision_explanation(saved: dict, *, include_charts: bool = False) -> None:
+    """Make the worker's saved result understandable after the browser was closed."""
+    recorded_at = str(saved.get("decided_at", "")).replace("T", " ")
+    source = str(saved.get("source", "worker")).replace("-", " ")
+    action = saved.get("action", "NO TRADE")
+    st.caption(f"Saved {recorded_at} IST • source: {source} • result: {action}")
+    reasons = saved.get("reasons", [])
+    blockers = saved.get("blockers", [])
+    if reasons:
+        st.markdown("**Evidence Nandi found**")
+        for reason in reasons:
+            st.success(str(reason))
+    if blockers:
+        st.markdown("**Why Nandi did not approve a paper trade**")
+        for blocker in blockers:
+            st.warning(str(blocker))
+    if not reasons and not blockers:
+        st.info("This saved snapshot has no additional decision text yet. Capture more confirming snapshots.")
+    if include_charts:
+        evidence = saved.get("evidence", {})
+        if isinstance(evidence, dict) and evidence:
+            st.markdown('<div class="nandi-section-label">SAVED EVIDENCE</div>', unsafe_allow_html=True)
+            st.subheader("Charts behind this saved decision")
+            evidence_dashboard_data(evidence)
+
+
 def command_center() -> None:
     header("Nandi Command Center", "Unified NIFTY option-chain probability strategy")
     market_status = market_session_panel()
     decision = st.session_state.latest_decision
     snapshot = st.session_state.latest_snapshot
+    latest = STORE.latest_analysis()
+    shown_spot = snapshot.spot if snapshot else (latest["spot"] if latest else None)
+    shown_action = decision.action if decision else (latest["action"] if latest else "NO DATA")
+    shown_bullish = decision.bullish_score if decision else (latest["bullish_score"] if latest else None)
+    shown_bearish = decision.bearish_score if decision else (latest["bearish_score"] if latest else None)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("NIFTY", f"{snapshot.spot:,.2f}" if snapshot else "Waiting")
-    c2.metric("Decision", decision.action if decision else "NO DATA")
-    c3.metric("Bullish", f"{decision.bullish_score:.1f}" if decision else "—")
-    c4.metric("Bearish", f"{decision.bearish_score:.1f}" if decision else "—")
+    c1.metric("NIFTY", f"{shown_spot:,.2f}" if shown_spot is not None else "Waiting")
+    c2.metric("Decision", shown_action)
+    c3.metric("Bullish", f"{shown_bullish:.1f}" if shown_bullish is not None else "—")
+    c4.metric("Bearish", f"{shown_bearish:.1f}" if shown_bearish is not None else "—")
     st.markdown(
         """
         <div class="nandi-research-card">
@@ -321,14 +372,17 @@ def command_center() -> None:
         w4.metric("Last snapshot", health["last_snapshot"][-8:] if health.get("last_snapshot") else "Waiting")
         if health.get("last_error"):
             st.error(f"Worker issue: {health['last_error']}")
-    latest = STORE.latest_analysis()
     if latest:
-        st.caption("Latest saved analysis — collected by Nandi even when this dashboard was closed.")
+        st.subheader("Latest saved analysis")
+        st.caption("This is the most recent result kept by Nandi, including work done while the dashboard was closed.")
         a1, a2, a3, a4 = st.columns(4)
         a1.metric("Saved action", latest["action"])
         a2.metric("Saved NIFTY", f"{latest['spot']:,.2f}")
         a3.metric("Setup quality", f"{latest['setup_quality']:.1f}/100")
         a4.metric("Expiry", latest["expiry"] or "—")
+        saved_decision_explanation(latest)
+        with st.expander("View exact charts behind the saved analysis"):
+            saved_decision_explanation(latest, include_charts=True)
 
 
 def live_engine() -> None:
@@ -360,7 +414,12 @@ def live_engine() -> None:
     snapshot = st.session_state.latest_snapshot
     decision = st.session_state.latest_decision
     if not snapshot or not decision:
-        st.warning("Add the Upstox Analytics Token in Settings/Streamlit Secrets, then capture three snapshots.")
+        latest = STORE.latest_analysis()
+        if latest:
+            st.info("There is no new in-browser capture yet. Nandi's most recently saved worker analysis is shown below.")
+            saved_decision_explanation(latest, include_charts=True)
+        else:
+            st.warning("Add the Upstox Analytics Token in Settings/Streamlit Secrets, then capture three snapshots.")
         return
 
     a, b, c, d = st.columns(4)
@@ -447,7 +506,12 @@ def daily_report() -> None:
         background = pd.DataFrame(saved_rows)
         background["decided_at"] = pd.to_datetime(background["decided_at"])
         chronological = background.sort_values("decided_at")
-        st.line_chart(chronological.set_index("decided_at")[["bullish_score", "bearish_score"]])
+        score_tab, market_tab = st.tabs(["Evidence scores", "NIFTY and setup quality"])
+        with score_tab:
+            st.line_chart(chronological.set_index("decided_at")[["bullish_score", "bearish_score", "setup_quality"]])
+        with market_tab:
+            st.line_chart(chronological.set_index("decided_at")[["spot"]])
+            st.line_chart(chronological.set_index("decided_at")[["setup_quality"]])
         r1, r2, r3 = st.columns(3)
         r1.metric("Saved snapshots", len(background))
         r2.metric("Approved setups", int((background["action"] != "NO TRADE").sum()))
@@ -469,6 +533,30 @@ def daily_report() -> None:
         st.success(saved_report["summary"])
     else:
         st.info("The local worker creates this only after an NSE market session closes.")
+
+
+def local_setup() -> None:
+    header("Run Nandi locally", "Free, paper-only background research on your own computer")
+    st.info("The hosted dashboard is for viewing. To keep research running while you are away, run the local worker on a computer that stays on during market hours.")
+    first, second, third = st.columns(3)
+    with first:
+        st.markdown("""
+        <div class="nandi-setup-step"><div class="nandi-setup-number">STEP 1</div><div class="nandi-setup-title">Install Docker Desktop</div><div class="nandi-setup-copy">This is free for personal use and keeps Nandi's dashboard and worker together.</div></div>
+        """, unsafe_allow_html=True)
+    with second:
+        st.markdown("""
+        <div class="nandi-setup-step"><div class="nandi-setup-number">STEP 2</div><div class="nandi-setup-title">Create your local .env</div><div class="nandi-setup-copy">Copy .env.example, then add your private login and read-only Upstox token. The file is never committed.</div></div>
+        """, unsafe_allow_html=True)
+    with third:
+        st.markdown("""
+        <div class="nandi-setup-step"><div class="nandi-setup-number">STEP 3</div><div class="nandi-setup-title">Start Nandi</div><div class="nandi-setup-copy">One command runs the local dashboard and market-hours worker. It places no broker orders.</div></div>
+        """, unsafe_allow_html=True)
+    st.subheader("Commands to run in the project folder")
+    st.code("docker compose run --rm worker python worker.py --check\ndocker compose up -d --build", language="bash")
+    st.caption("The check does not contact Upstox or print your token. After startup, open http://localhost:8501.")
+    st.subheader("What Nandi will do")
+    st.write("It follows IST, runs on weekdays from 09:15 to 15:30 (excluding the NSE holidays you configure), saves each paper-research snapshot locally, and retries safely if Upstox is temporarily unavailable.")
+    st.write("Detailed setup, status commands and safe restart instructions are in `ALWAYS_ON.md` in the project.")
 
 
 def backtest_lab() -> None:
@@ -812,6 +900,7 @@ def settings() -> None:
         language="toml",
     )
     st.write("Add this to your Streamlit app Secrets. Never paste the token into source code or chat.")
+    st.write("For local always-on Nandi, put the same read-only token in your private `.env` file instead. Sample values beginning with `YOUR_` or `PASTE_` are rejected.")
     st.write("Nandi always uses IST. Add official NSE trading-holiday dates to `nse.holidays` so captures are paused on exchange holidays too.")
     st.write("Underlying: `NSE_INDEX|Nifty 50`")
     st.write("Live OI V1 expiry: `current_week` (automatic rollover)")
@@ -830,6 +919,7 @@ pages = {
     "Daily Report": daily_report,
     "Backtest Lab": backtest_lab,
     "RSI Strategy Lab": rsi_backtest_lab,
+    "Local Setup": local_setup,
     "Settings": settings,
 }
 if not st.session_state.logged_in:

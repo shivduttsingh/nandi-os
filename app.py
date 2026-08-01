@@ -12,27 +12,105 @@ from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.evidence import decision_history_rows, expiry_comparison_rows, live_evidence
 from nandi_oi.backtest import NandiBacktester
 from nandi_oi.historical import UpstoxHistoricalClient
+from nandi_oi.market_schedule import MarketSchedule
 from nandi_oi.paper import PaperJournal
 from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAMES
 
 
-st.set_page_config(page_title="Nandi OI", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Nandi", page_icon="N", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
-:root { --nandi-green:#137a46; --nandi-green-dark:#075c32; --nandi-mint:#eaf8ef; --nandi-line:#d8e9df; }
-.stApp { background: linear-gradient(135deg, #ffffff 0%, #f6fcf8 58%, #eaf8ef 100%); color:#173226; }
-section[data-testid="stSidebar"] { background:#ffffff; border-right:1px solid var(--nandi-line); }
-section[data-testid="stSidebar"] h1 { color:var(--nandi-green-dark); }
-div[data-testid="stMetric"] { background:#ffffff; border:1px solid var(--nandi-line); border-radius:14px; padding:14px; box-shadow:0 4px 16px rgba(19,122,70,.06); }
-div[data-testid="stMetric"] label { color:#52705e; }
-.stButton > button[kind="primary"] { background:var(--nandi-green); border-color:var(--nandi-green); }
+:root {
+  --nandi-green:#126b3a;
+  --nandi-green-dark:#0b4e2a;
+  --nandi-green-soft:#edf7f1;
+  --nandi-ink:#16271e;
+  --nandi-muted:#64746c;
+  --nandi-line:#dbe8e0;
+  --nandi-warm:#f8fbf9;
+}
+.stApp { background:#ffffff; color:var(--nandi-ink); }
+.block-container { max-width:1480px; padding-top:2rem; padding-bottom:4rem; }
+section[data-testid="stSidebar"] { background:var(--nandi-warm); border-right:1px solid var(--nandi-line); }
+section[data-testid="stSidebar"] .block-container { padding-top:1.45rem; }
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color:var(--nandi-muted); }
+h1,h2,h3 { color:var(--nandi-ink); letter-spacing:-.025em; }
+h2 { font-size:1.35rem!important; margin-top:1.7rem!important; }
+p,div,label { line-height:1.5; }
+div[data-testid="stMetric"] {
+  background:#ffffff; border:1px solid var(--nandi-line); border-radius:14px;
+  padding:16px 18px; box-shadow:0 6px 18px rgba(18,107,58,.045);
+}
+div[data-testid="stMetricLabel"] { color:var(--nandi-muted); font-size:.78rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+div[data-testid="stMetricValue"] { color:var(--nandi-ink); font-weight:760; }
+.stButton > button, .stDownloadButton > button { border-radius:10px; border-color:var(--nandi-line); min-height:2.7rem; font-weight:700; }
+.stButton > button[kind="primary"] { background:var(--nandi-green); border-color:var(--nandi-green); color:#fff; }
 .stButton > button[kind="primary"]:hover { background:var(--nandi-green-dark); border-color:var(--nandi-green-dark); }
 [data-testid="stDataFrame"] { border:1px solid var(--nandi-line); border-radius:12px; overflow:hidden; }
+div[data-testid="stExpander"] { border:1px solid var(--nandi-line); border-radius:12px; background:#fff; }
+div[data-baseweb="tab-list"] { gap:.25rem; border-bottom:1px solid var(--nandi-line); }
+button[data-baseweb="tab"] { border-radius:8px 8px 0 0; padding:.65rem 1rem; }
+button[data-baseweb="tab"][aria-selected="true"] { background:var(--nandi-green-soft); color:var(--nandi-green-dark); }
+.nandi-hero {
+  display:flex; align-items:flex-start; justify-content:space-between; gap:1.5rem;
+  padding:1.55rem 1.7rem; margin:0 0 1.55rem; border:1px solid var(--nandi-line);
+  border-radius:18px; background:linear-gradient(112deg,#ffffff 50%,#eef8f2 100%);
+  box-shadow:0 10px 28px rgba(18,107,58,.055); position:relative; overflow:hidden;
+}
+.nandi-hero:before { content:""; position:absolute; left:0; top:0; bottom:0; width:5px; background:var(--nandi-green); }
+.nandi-eyebrow { font-size:.72rem; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:var(--nandi-green); }
+.nandi-title { font-size:2rem; font-weight:780; letter-spacing:-.04em; color:var(--nandi-ink); margin:.24rem 0 .26rem; }
+.nandi-subtitle { max-width:740px; color:var(--nandi-muted); font-size:.96rem; }
+.nandi-status { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid #b9ddc8; background:#ffffff; color:var(--nandi-green-dark); border-radius:999px; padding:.46rem .78rem; font-size:.72rem; font-weight:800; letter-spacing:.06em; }
+.nandi-brand { display:flex; align-items:center; gap:.75rem; margin:.2rem 0 1.35rem; }
+.nandi-mark { display:grid; place-items:center; width:40px; height:40px; border-radius:12px; background:var(--nandi-green); color:#fff; font-weight:850; font-size:1.1rem; }
+.nandi-brand-name { font-size:1.35rem; font-weight:780; color:var(--nandi-ink); line-height:1.05; letter-spacing:-.03em; }
+.nandi-brand-copy { color:var(--nandi-muted); font-size:.68rem; letter-spacing:.1em; font-weight:750; }
+.nandi-login-heading { font-size:1.6rem; line-height:1.16; letter-spacing:-.035em; font-weight:780; color:var(--nandi-ink); margin:0 0 .6rem; }
+.nandi-login-copy { color:var(--nandi-muted); max-width:590px; margin-bottom:1.25rem; }
+.nandi-principles { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.7rem; margin-top:1rem; }
+.nandi-principle { border:1px solid var(--nandi-line); border-radius:12px; background:#fff; padding:.85rem .9rem; }
+.nandi-principle-label { color:var(--nandi-green); font-size:.67rem; font-weight:800; letter-spacing:.1em; }
+.nandi-principle-copy { color:var(--nandi-muted); font-size:.8rem; margin-top:.24rem; }
+.nandi-section-label { color:var(--nandi-green); font-size:.7rem; letter-spacing:.12em; font-weight:800; margin-bottom:.2rem; }
+.nandi-research-card { border:1px solid var(--nandi-line); border-radius:14px; padding:1rem 1.1rem; background:#fff; margin:1.2rem 0 1rem; }
+.nandi-research-title { font-size:1rem; font-weight:760; color:var(--nandi-ink); margin:.1rem 0; }
+.nandi-research-copy { font-size:.88rem; color:var(--nandi-muted); }
+.nandi-chip-row { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:.8rem; }
+.nandi-chip { border:1px solid #c8e2d2; color:var(--nandi-green-dark); background:var(--nandi-green-soft); border-radius:999px; padding:.24rem .55rem; font-size:.7rem; font-weight:750; }
+.nandi-session-card { display:flex; align-items:center; justify-content:space-between; gap:1.2rem; border:1px solid var(--nandi-line); border-radius:14px; padding:1rem 1.1rem; background:#fff; margin:0 0 1rem; }
+.nandi-session-title { font-size:1rem; font-weight:760; color:var(--nandi-ink); margin:.08rem 0; }
+.nandi-session-copy { color:var(--nandi-muted); font-size:.86rem; }
+.nandi-session-time { color:var(--nandi-green-dark); text-align:right; font-size:.78rem; font-weight:760; white-space:nowrap; }
+@media (max-width: 760px) { .nandi-session-card { align-items:flex-start; flex-direction:column; } .nandi-session-time { text-align:left; } }
+@media (max-width: 760px) {
+  .nandi-hero { padding:1.25rem; }
+  .nandi-status { display:none; }
+  .nandi-title { font-size:1.65rem; }
+  .nandi-principles { grid-template-columns:1fr; }
+}
 </style>
 """, unsafe_allow_html=True)
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def configured_market_schedule() -> MarketSchedule:
+    """Load optional NSE holiday dates without trusting the cloud server timezone."""
+    holiday_values = os.getenv("NANDI_NSE_HOLIDAYS", "").split(",")
+    try:
+        secret_values = st.secrets.get("nse", {}).get("holidays", [])
+        if isinstance(secret_values, str):
+            holiday_values.extend(secret_values.split(","))
+        else:
+            holiday_values.extend(secret_values)
+    except Exception:
+        pass
+    return MarketSchedule.from_iso_dates(holiday_values)
+
+
+MARKET_SCHEDULE = configured_market_schedule()
 
 APP_USERNAME: str | None = None
 APP_PASSWORD: str | None = None
@@ -85,12 +163,22 @@ def login_page() -> None:
     header("Nandi", "Private OI Paper Research System")
     left, right = st.columns([1.2, 1], gap="large")
     with left:
-        st.header("Unified NIFTY Option-Chain Intelligence")
-        st.write("OI direction, premium behaviour, NIFTY confirmation, paper trades and daily evidence—one focused system.")
-        st.success("Paper mode only • Maximum three quality trades daily")
+        st.markdown(
+            """
+            <div class="nandi-login-heading">A calm workspace for explainable NIFTY options research.</div>
+            <div class="nandi-login-copy">Nandi connects option-chain activity, premium behaviour and NIFTY price structure so every paper-trade decision can be checked against its evidence.</div>
+            <div class="nandi-principles">
+              <div class="nandi-principle"><div class="nandi-principle-label">LIVE RESEARCH</div><div class="nandi-principle-copy">Current-week NIFTY chain around ATM ±5 strikes.</div></div>
+              <div class="nandi-principle"><div class="nandi-principle-label">EXPLAINED</div><div class="nandi-principle-copy">Charts and written reasons for every decision.</div></div>
+              <div class="nandi-principle"><div class="nandi-principle-label">PAPER ONLY</div><div class="nandi-principle-copy">Research discipline, never a broker order.</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     with right:
         with st.container(border=True):
-            st.subheader("Sign in")
+            st.subheader("Private sign in")
+            st.caption("Your credentials are checked only against the values in Streamlit Secrets.")
             with st.form("login_form"):
                 username = st.text_input("Email or Username")
                 password = st.text_input("Password", type="password")
@@ -119,8 +207,42 @@ def login_page() -> None:
 
 
 def header(title: str, subtitle: str) -> None:
-    st.title(title)
-    st.caption(subtitle)
+    st.markdown(
+        f"""
+        <div class="nandi-hero">
+          <div>
+            <div class="nandi-eyebrow">Nandi Intelligence</div>
+            <div class="nandi-title">{title}</div>
+            <div class="nandi-subtitle">{subtitle}</div>
+          </div>
+          <div class="nandi-status">PAPER RESEARCH ONLY</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def market_session_panel():
+    """Show the exact session decision used to permit live captures."""
+    status = MARKET_SCHEDULE.status()
+    if status.is_open:
+        next_label = f"Live capture allowed until {status.next_open.strftime('%I:%M %p IST')}"
+    else:
+        next_label = f"Next session: {status.next_open.strftime('%a, %d %b · %I:%M %p IST')}"
+    st.markdown(
+        f"""
+        <div class="nandi-session-card">
+          <div>
+            <div class="nandi-section-label">NSE EQUITY DERIVATIVES</div>
+            <div class="nandi-session-title">{status.label}</div>
+            <div class="nandi-session-copy">{status.reason}</div>
+          </div>
+          <div class="nandi-session-time">{status.observed_at.strftime('%d %b %Y · %I:%M:%S %p IST')}<br>{next_label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return status
 
 
 
@@ -154,6 +276,7 @@ def evidence_dashboard(snapshot, decision) -> None:
 
 def command_center() -> None:
     header("Nandi Command Center", "Unified NIFTY option-chain probability strategy")
+    market_status = market_session_panel()
     decision = st.session_state.latest_decision
     snapshot = st.session_state.latest_snapshot
     c1, c2, c3, c4 = st.columns(4)
@@ -161,21 +284,39 @@ def command_center() -> None:
     c2.metric("Decision", decision.action if decision else "NO DATA")
     c3.metric("Bullish", f"{decision.bullish_score:.1f}" if decision else "—")
     c4.metric("Bearish", f"{decision.bearish_score:.1f}" if decision else "—")
-    st.info("Nandi V1 approves only scores ≥80, a ≥20-point directional lead, price/premium confirmation and three persistent snapshots.")
+    st.markdown(
+        """
+        <div class="nandi-research-card">
+          <div class="nandi-section-label">RESEARCH DISCIPLINE</div>
+          <div class="nandi-research-title">Nandi waits for evidence; it does not force a trade.</div>
+          <div class="nandi-research-copy">V1 needs a quality score of at least 80, a 20-point directional lead, price and premium confirmation, plus three persistent snapshots.</div>
+          <div class="nandi-chip-row"><span class="nandi-chip">OI direction</span><span class="nandi-chip">Option premium</span><span class="nandi-chip">NIFTY structure</span><span class="nandi-chip">3-snapshot check</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if not market_status.is_open:
+        st.caption("Live capture is paused outside the NSE session. The current cloud dashboard does not collect data while the browser is closed.")
     trades = journal.trades_today()
     st.metric("Paper trades today", f"{len(trades)} / 3")
 
 
 def live_engine() -> None:
     header("Live OI Engine", "Upstox NIFTY current-week chain • ATM ±5 strikes")
-    if st.button("Capture Upstox Snapshot", type="primary", use_container_width=True):
+    market_status = market_session_panel()
+    if not market_status.is_open:
+        st.warning("Live option-chain capture is paused. Nandi will allow the next snapshot only in the displayed NSE session.")
+    if st.button(
+        "Capture Upstox Snapshot", type="primary", use_container_width=True,
+        disabled=not market_status.is_open,
+    ):
         try:
             capture()
             st.success("Snapshot captured and analysed")
         except UpstoxAPIError as exc:
             st.error(str(exc))
 
-    auto = st.toggle("Auto-capture every 30 seconds", value=False)
+    auto = st.toggle("Auto-capture every 30 seconds", value=False, disabled=not market_status.is_open)
     if auto:
         @st.fragment(run_every="30s")
         def auto_capture_panel() -> None:
@@ -200,11 +341,11 @@ def live_engine() -> None:
     if decision.reasons:
         st.subheader("Confirmed evidence")
         for reason in decision.reasons:
-            st.write(f"✅ {reason}")
+            st.success(reason)
     if decision.blockers:
         st.subheader("Why Nandi is waiting")
         for blocker in decision.blockers:
-            st.write(f"⏳ {blocker}")
+            st.warning(blocker)
 
     rows = [{"Strike": x.strike, "Side": x.side, "OI": x.oi, "ΔOI": x.change_oi,
              "LTP": x.ltp, "ΔLTP": x.change_ltp, "Activity": x.activity,
@@ -212,7 +353,9 @@ def live_engine() -> None:
     frame = pd.DataFrame(rows)
     nearest = sorted(frame.Strike.unique(), key=lambda x: abs(x - snapshot.spot))[:11]
     st.dataframe(frame[frame.Strike.isin(nearest)].sort_values(["Strike", "Side"]), use_container_width=True, hide_index=True)
+    st.markdown('<div class="nandi-section-label">DECISION EXPLAINER</div>', unsafe_allow_html=True)
     st.subheader("Evidence behind this decision")
+    st.caption("Every chart uses the same snapshot data that produced the decision above. The display explains the strategy; it does not change the OI V1 rules.")
     evidence_dashboard(snapshot, decision)
 
 
@@ -604,8 +747,13 @@ def rsi_backtest_lab() -> None:
 
 def settings() -> None:
     header("Settings", "Secure Upstox configuration")
-    st.code('[upstox]\naccess_token = "PASTE_YOUR_ANALYTICS_TOKEN_HERE"', language="toml")
+    st.code(
+        '[upstox]\naccess_token = "PASTE_YOUR_ANALYTICS_TOKEN_HERE"\n\n'
+        '[nse]\nholidays = ["YYYY-MM-DD"]',
+        language="toml",
+    )
     st.write("Add this to your Streamlit app Secrets. Never paste the token into source code or chat.")
+    st.write("Nandi always uses IST. Add official NSE trading-holiday dates to `nse.holidays` so captures are paused on exchange holidays too.")
     st.write("Underlying: `NSE_INDEX|Nifty 50`")
     st.write("Live OI V1 expiry: `current_week` (automatic rollover)")
     st.write("RSI historical comparison: nearest weekly and nearest monthly expiry")
@@ -629,12 +777,23 @@ if not st.session_state.logged_in:
     login_page()
 else:
     with st.sidebar:
-        st.title("Nandi")
-        st.caption("OI Paper Research System")
+        st.markdown(
+            """
+            <div class="nandi-brand">
+              <div class="nandi-mark">N</div>
+              <div>
+                <div class="nandi-brand-name">Nandi</div>
+                <div class="nandi-brand-copy">MARKET INTELLIGENCE</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         page = st.radio("Navigation", list(pages), label_visibility="collapsed")
         st.divider()
-        st.success("Paper mode only")
-        st.write(datetime.now().strftime("%d %b %Y · %I:%M %p"))
+        st.caption("RESEARCH STATUS")
+        st.success("Paper mode active")
+        st.caption(datetime.now().strftime("%d %b %Y · %I:%M %p"))
         if st.button("Logout", use_container_width=True):
             st.session_state.logged_in = False
             st.rerun()

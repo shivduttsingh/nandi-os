@@ -35,6 +35,14 @@ The worker never calls a broker-order endpoint. It cannot place trades.
 
 7. Open `http://localhost:8501` and log in with the username and password from `.env`.
 
+Before starting it for the first time, you can safely check the setup. This command does not request market data and does not print your token:
+
+```bash
+docker compose run --rm worker python worker.py --check
+```
+
+It reports whether the local database and read-only Upstox token are ready, plus the exact NSE session status Nandi will follow.
+
 ## What Nandi follows
 
 - Timezone: `Asia/Kolkata` (IST), never the computer/server timezone.
@@ -65,3 +73,5 @@ Do not use `docker compose down -v`: that removes the saved Nandi database.
 ## Alerts
 
 Nandi always saves approved-setup and daily-report alerts in the local dashboard. To receive an alert outside the dashboard, set `NANDI_ALERT_WEBHOOK_URL` to a notification endpoint you control. Nandi sends only a title, explanation, score and timestamp; it never sends your Upstox token.
+
+If the webhook setting is blank, Nandi makes no outbound alert request. It simply keeps the alert in the local dashboard.

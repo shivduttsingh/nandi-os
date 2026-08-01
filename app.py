@@ -17,6 +17,7 @@ from nandi_oi.market_schedule import MarketSchedule
 from nandi_oi.paper import PaperJournal
 from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAMES
 from nandi_oi.store import NandiStore
+from nandi_oi.unified_backtest import UnifiedBacktester
 
 
 st.set_page_config(page_title="Nandi", page_icon="N", layout="wide", initial_sidebar_state="expanded")
@@ -163,6 +164,15 @@ if "latest_decision" not in st.session_state:
     st.session_state.latest_decision = None
 if "decision_log" not in st.session_state:
     st.session_state.decision_log = []
+
+
+def saved_rsi_strategies() -> dict[str, dict[str, float | int]]:
+    """Keep saved RSI settings available to both the focused and unified labs."""
+    if "rsi_saved_strategies" not in st.session_state:
+        st.session_state.rsi_saved_strategies = STORE.rsi_strategies() or {
+            "RSI 14 — 24/72": {"length": 14, "lower": 24.0, "upper": 72.0}
+        }
+    return st.session_state.rsi_saved_strategies
 
 journal = PaperJournal()
 
@@ -657,17 +667,153 @@ def backtest_lab() -> None:
         st.warning("The strategy produced no approved entries in the selected period.")
 
 
+def unified_backtest_lab() -> None:
+    header("Unified Backtest", "Every implemented Nandi strategy • one comparable historical report")
+    st.info(
+        "This runs Nandi OI V1 once on its nearest-weekly chain and every selected saved RSI setup on both "
+        "nearest-weekly and nearest-monthly contracts. Each strategy stays separate; Nandi does not invent a combined P&L."
+    )
+    st.caption(
+        "Historical option data is replayed as five-minute snapshots without future-data access. "
+        "The optional RSI audit uses NIFTY one-minute candles across all selected timeframes."
+    )
+
+    period = st.selectbox(
+        "Unified test period", ["Single day", "One week", "One month", "Custom dates"],
+    )
+    latest = date.today() - timedelta(days=1)
+    if period == "Single day":
+        selected_date = st.date_input("Unified trading date", value=latest, max_value=latest)
+        start = end = selected_date
+    elif period == "One week":
+        end = st.date_input("Unified week ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=6)
+    elif period == "One month":
+        end = st.date_input("Unified month ending date", value=latest, max_value=latest)
+        start = end - timedelta(days=29)
+    else:
+        first, second = st.columns(2)
+        start = first.date_input("Unified start date", value=latest - timedelta(days=29), max_value=latest)
+        end = second.date_input("Unified end date", value=latest, min_value=start, max_value=latest)
+
+    saved = saved_rsi_strategies()
+    strategy_names = list(saved)
+    selected_names = st.multiselect(
+        "Saved RSI strategies to include", strategy_names, default=strategy_names,
+        help="Manage or add these saved settings in RSI Strategy Lab.",
+    )
+    audit_timeframes = st.multiselect(
+        "RSI touch-audit timeframes", list(TIMEFRAMES), default=list(TIMEFRAMES),
+        format_func=lambda value: "1 hour" if value == 60 else f"{value} min",
+    )
+    left, right = st.columns(2)
+    left.metric("Start date", start.strftime("%d %b %Y"))
+    right.metric("End date", end.strftime("%d %b %Y"))
+    st.caption("Requires Upstox Plus historical access. No broker order is sent.")
+
+    if st.button("Run Full Nandi Backtest", type="primary", use_container_width=True):
+        progress_bar = st.progress(0.0, text="Preparing full Nandi historical replay…")
+        try:
+            if not selected_names:
+                raise ValueError("Select at least one saved RSI strategy")
+            if not audit_timeframes:
+                raise ValueError("Select at least one RSI touch-audit timeframe")
+            token = st.session_state.upstox_client.access_token
+            client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
+            progress_bar.progress(0.05, text="Loading NIFTY one-minute RSI history…")
+            minute_closes = client.spot_candles(start - timedelta(days=45), end, interval_minutes=1)
+
+            def weekly_progress(done: int, total: int, label: str) -> None:
+                progress_bar.progress(
+                    0.05 + 0.43 * done / max(total, 1),
+                    text=f"Nearest-weekly options {done}/{total}: {label}",
+                )
+
+            weekly = client.build_snapshots(start, end, progress=weekly_progress, expiry_mode="weekly")
+            progress_bar.progress(0.50, text="Loading nearest-monthly option history…")
+
+            def monthly_progress(done: int, total: int, label: str) -> None:
+                progress_bar.progress(
+                    0.50 + 0.43 * done / max(total, 1),
+                    text=f"Nearest-monthly options {done}/{total}: {label}",
+                )
+
+            monthly = client.build_snapshots(start, end, progress=monthly_progress, expiry_mode="monthly")
+            selected_strategies = {name: saved[name] for name in selected_names}
+            result = UnifiedBacktester(rsi_timeframes=audit_timeframes).run(
+                weekly, monthly, selected_strategies, one_minute_closes=minute_closes,
+            )
+            st.session_state.unified_backtest_result = result
+            progress_bar.progress(1.0, text="Full Nandi backtest completed")
+            st.success("All selected Nandi strategies were replayed. No broker order was placed.")
+        except (UpstoxAPIError, ValueError) as exc:
+            progress_bar.empty()
+            st.error(str(exc))
+
+    result = st.session_state.get("unified_backtest_result")
+    if not result:
+        st.write("Run the full replay to compare OI V1 and every saved RSI setup in one report.")
+        return
+
+    summary = pd.DataFrame(result.summary_rows())
+    st.subheader("All strategy results")
+    st.caption(
+        "Use this to inspect historical evidence, not to choose a guaranteed winner. "
+        "A result with fewer trades has less evidence than a result observed across many trades."
+    )
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    chart_summary = summary.copy()
+    chart_summary["Strategy run"] = chart_summary["Strategy"] + " — " + chart_summary["Contract"]
+    win_tab, points_tab, drawdown_tab = st.tabs(["Win rate", "Net premium points", "Drawdown"])
+    with win_tab:
+        st.bar_chart(chart_summary.set_index("Strategy run")[["Win rate %"]])
+    with points_tab:
+        st.bar_chart(chart_summary.set_index("Strategy run")[["Net premium points"]])
+    with drawdown_tab:
+        st.bar_chart(chart_summary.set_index("Strategy run")[["Maximum drawdown"]])
+
+    equity_rows = result.equity_rows()
+    if equity_rows:
+        equity = pd.DataFrame(equity_rows)
+        equity["Closed at"] = pd.to_datetime(equity["Closed at"])
+        curve = equity.pivot(index="Closed at", columns="Strategy run", values="Cumulative premium points")
+        st.subheader("Separate cumulative premium curves")
+        st.caption("Each curve is kept separate; summing them would falsely assume the same capital can enter every strategy at once.")
+        st.line_chart(curve)
+
+    touch_rows = result.rsi_touch_rows()
+    if touch_rows:
+        touches = pd.DataFrame(touch_rows)
+        st.subheader("RSI touch audit across every selected timeframe")
+        st.caption("This confirms how often each saved RSI strategy saw an independent lower or upper zone entry on the NIFTY chart.")
+        st.dataframe(touches, use_container_width=True, hide_index=True)
+        st.bar_chart(touches.pivot(index="Timeframe", columns="Strategy", values="Total touches"))
+
+    ledger_rows = result.ledger_rows()
+    st.subheader("All paper-trade ledger rows")
+    if ledger_rows:
+        ledger = pd.DataFrame(ledger_rows)
+        st.dataframe(ledger, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download Full Nandi Trade Ledger", ledger.to_csv(index=False).encode("utf-8"),
+            file_name=f"nandi_unified_ledger_{result.start_date}_{result.end_date}.csv",
+            mime="text/csv", use_container_width=True,
+        )
+    else:
+        st.info("No paper trades were triggered by the selected strategies in this period. The no-trade counts above are still evidence.")
+    st.download_button(
+        "Download Full Nandi Strategy Comparison", summary.to_csv(index=False).encode("utf-8"),
+        file_name=f"nandi_unified_summary_{result.start_date}_{result.end_date}.csv",
+        mime="text/csv", use_container_width=True,
+    )
+
+
 def rsi_backtest_lab() -> None:
     header("RSI Strategy Lab", "Editable RSI period and levels • multi-timeframe touch analysis")
     st.info("The old 20% stop / 30% target is removed. RSI trades use a 5% premium stop; the target is the opposite editable RSI level. Nandi V1 OI remains unchanged.")
 
-    if "rsi_saved_strategies" not in st.session_state:
-        st.session_state.rsi_saved_strategies = {
-            "RSI 14 — 24/72": {"length": 14, "lower": 24.0, "upper": 72.0}
-        }
-
     st.subheader("Strategy settings")
-    saved = st.session_state.rsi_saved_strategies
+    saved = saved_rsi_strategies()
     selected_name = st.selectbox("Load saved RSI strategy", list(saved))
     selected = saved[selected_name]
     strategy_name = st.text_input("Strategy name", value=selected_name)
@@ -691,6 +837,7 @@ def rsi_backtest_lab() -> None:
         else:
             saved[strategy_name.strip()] = {"length": length, "lower": lower, "upper": upper}
             st.session_state.rsi_saved_strategies = saved
+            STORE.save_rsi_strategy(strategy_name, length, lower, upper)
             st.success(f"Saved: {strategy_name.strip()}")
     download_col.download_button(
         "Download all saved strategies",
@@ -707,6 +854,9 @@ def rsi_backtest_lab() -> None:
                 RsiTouchAnalyzer(
                     length=int(setup["length"]), lower=float(setup["lower"]),
                     upper=float(setup["upper"]), timeframes=(5,),
+                )
+                STORE.save_rsi_strategy(
+                    str(name), int(setup["length"]), float(setup["lower"]), float(setup["upper"]),
                 )
             st.session_state.rsi_saved_strategies.update(imported)
             st.success("Strategies imported. Refresh this page to select them.")
@@ -918,6 +1068,7 @@ pages = {
     "Paper Trades": paper_trades,
     "Daily Report": daily_report,
     "Backtest Lab": backtest_lab,
+    "Unified Backtest": unified_backtest_lab,
     "RSI Strategy Lab": rsi_backtest_lab,
     "Local Setup": local_setup,
     "Settings": settings,

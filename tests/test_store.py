@@ -32,3 +32,7 @@ def test_store_persists_analysis_health_and_alerts():
         report = store.build_daily_report(snapshot.timestamp.date(), now=snapshot.timestamp)
         assert report["snapshots"] == 1
         assert report["buy_ce_setups"] == 1
+        store.save_rsi_strategy("RSI 14 — 24/72", 14, 24, 72, now=snapshot.timestamp)
+        assert store.rsi_strategies() == {
+            "RSI 14 — 24/72": {"length": 14, "lower": 24.0, "upper": 72.0}
+        }

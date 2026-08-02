@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from nandi_oi.models import OptionLeg, OptionSnapshot
-from nandi_oi.unified_backtest import UnifiedBacktester
+from nandi_oi.unified_backtest import OI_STRATEGY_NAMES, UnifiedBacktester, run_one_oi_strategy
 
 
 def snapshot(at: datetime, spot: float, premium: float) -> OptionSnapshot:
@@ -103,3 +103,18 @@ def test_unified_backtest_keeps_daily_chart_evidence_and_strategy_background():
     assert result.approval_rows(chart_rows[-1])[-1]["Approval gate"] == "Final paper action"
     provenance = result.data_provenance_rows(selected_timestamp, result.runs[0])
     assert any(row["Item"] == "Option data source" for row in provenance)
+
+
+def test_every_oi_strategy_can_run_in_its_own_auditable_result():
+    start = datetime(2026, 7, 20, 9, 15)
+    records = [snapshot(start + timedelta(minutes=5 * index), 25000 + index * 10, 100 + index)
+               for index in range(16)]
+    for strategy in OI_STRATEGY_NAMES:
+        result = run_one_oi_strategy(strategy, records)
+        assert len(result.runs) == 1
+        run = result.runs[0]
+        assert run.strategy == strategy
+        chart_rows = result.daily_chart_rows(start.date(), run=run)
+        assert chart_rows and "Strategy action" in chart_rows[-1]
+        assert result.strategy_calculation_rows(run, chart_rows[-1])
+        assert result.strategy_approval_rows(run, chart_rows[-1])

@@ -17,7 +17,9 @@ from nandi_oi.market_schedule import MarketSchedule
 from nandi_oi.paper import PaperJournal
 from nandi_oi.rsi_backtest import RsiLevelBacktester, RsiTouchAnalyzer, TIMEFRAMES
 from nandi_oi.store import NandiStore
-from nandi_oi.unified_backtest import UnifiedBacktester
+from nandi_oi.unified_backtest import (
+    UnifiedBacktester, UnifiedBacktestResult, UnifiedStrategyRun, run_one_oi_strategy,
+)
 
 
 st.set_page_config(page_title="Nandi", page_icon="N", layout="wide", initial_sidebar_state="expanded")
@@ -667,8 +669,8 @@ def backtest_lab() -> None:
         st.warning("The strategy produced no approved entries in the selected period.")
 
 
-def daily_strategy_analysis(result) -> None:
-    """One chart-led daily workspace for all historical strategies and OI evidence."""
+def daily_strategy_analysis(result, *, fixed_strategy_label: str | None = None) -> None:
+    """One chart-led workspace for one selected strategy and its raw historical evidence."""
     dates = result.available_dates()
     if not dates:
         st.warning("This saved result was created before daily evidence was available. Run the full backtest again.")
@@ -676,17 +678,20 @@ def daily_strategy_analysis(result) -> None:
 
     st.markdown('<div class="nandi-section-label">ONE DAILY WORKSPACE</div>', unsafe_allow_html=True)
     st.subheader("Daily strategy analysis")
-    st.caption(
-        "Choose one trading day and one strategy. The charts, the OI evidence, the technical analysis and the actual "
-        "paper result stay together here—there is no need to open separate strategy pages."
-    )
     first, second = st.columns(2)
     selected_day = first.selectbox(
         "Trading day to inspect", list(reversed(dates)),
         format_func=lambda item: item.strftime("%A, %d %b %Y"),
+        key=f"daily_day_{fixed_strategy_label or 'compare'}",
     )
     labels = [run.label for run in result.runs]
-    selected_label = second.selectbox("Strategy to inspect", labels)
+    if fixed_strategy_label:
+        selected_label = fixed_strategy_label
+        second.metric("Strategy", result.strategy_run(selected_label).strategy)
+        st.caption("This screen contains the complete calculation, chart, raw OI rows and daily paper result for this strategy only.")
+    else:
+        selected_label = second.selectbox("Strategy to inspect", labels)
+        st.caption("Choose one strategy to inspect its calculation, chart and raw OI rows on this screen.")
     run = result.strategy_run(selected_label)
     background = run.background
 
@@ -718,6 +723,7 @@ def daily_strategy_analysis(result) -> None:
 
     chart_rows = result.daily_chart_rows(
         selected_day,
+        run=run,
         rsi_length=background.rsi_length,
         rsi_lower=background.rsi_lower,
         rsi_upper=background.rsi_upper,
@@ -734,10 +740,10 @@ def daily_strategy_analysis(result) -> None:
     walls.line_chart(chart[["CE OI wall", "PE OI wall"]])
 
     st.subheader("OI flow and final evidence score")
-    st.caption("These are calculated from the actual five-minute option-chain snapshots used in the replay—not invented chart values.")
+    st.caption("These are calculated from the actual five-minute option-chain snapshots used in this replay—not invented chart values.")
     oi, score = st.columns(2)
     oi.bar_chart(chart[["Nearby CE ΔOI", "Nearby PE ΔOI"]])
-    score.line_chart(chart[["OI bullish score", "OI bearish score", "Nandi bullish score", "Nandi bearish score"]])
+    score.line_chart(chart[["Strategy bullish score", "Strategy bearish score"]])
 
     st.subheader(f"RSI({background.rsi_length}) and option confirmation")
     st.caption("RSI is shown for the currently selected strategy. The horizontal reference lines are its saved lower and upper levels; premium lines are the ATM option values Nandi checked.")
@@ -767,20 +773,20 @@ def daily_strategy_analysis(result) -> None:
     )
     evidence_row = next(row for row in chart_rows if row["Timestamp"] == selected_timestamp)
     calc, gates = st.columns(2)
-    calc.markdown("**Weighted bullish and bearish score**")
-    calc.dataframe(pd.DataFrame(result.calculation_rows(evidence_row)), use_container_width=True, hide_index=True)
-    gates.markdown("**Approval gates at this exact snapshot**")
-    gates.dataframe(pd.DataFrame(result.approval_rows(evidence_row)), use_container_width=True, hide_index=True)
+    calc.markdown("**Calculation for this strategy**")
+    calc.dataframe(pd.DataFrame(result.strategy_calculation_rows(run, evidence_row)), use_container_width=True, hide_index=True)
+    gates.markdown("**Entry / approval gates for this strategy**")
+    gates.dataframe(pd.DataFrame(result.strategy_approval_rows(run, evidence_row)), use_container_width=True, hide_index=True)
     st.caption(
-        f"Final calculation at {selected_timestamp.strftime('%I:%M %p')}: "
-        f"bullish {evidence_row['Nandi bullish score']:.1f}/100 • bearish {evidence_row['Nandi bearish score']:.1f}/100 • "
-        f"action: {evidence_row['Final action']}."
+        f"Strategy calculation at {selected_timestamp.strftime('%I:%M %p')}: "
+        f"bullish {evidence_row['Strategy bullish score']:.1f}/100 • bearish {evidence_row['Strategy bearish score']:.1f}/100 • "
+        f"action: {evidence_row['Strategy action']}."
     )
 
     st.subheader("Raw OI option-chain rows behind this calculation")
-    st.caption("This is the exact nearest-weekly ATM ±5 option table Nandi used for the selected chart point. OI activity is calculated from change in OI and option-premium change.")
+    st.caption("This is the exact ATM ±5 option table used for the selected chart point. OI activity is calculated from change in OI and option-premium change.")
     st.dataframe(
-        pd.DataFrame(result.option_chain_rows(selected_timestamp.to_pydatetime())),
+        pd.DataFrame(result.option_chain_rows(selected_timestamp.to_pydatetime(), run)),
         use_container_width=True, hide_index=True,
     )
     with st.expander("Where this data came from and how Nandi used it"):
@@ -789,22 +795,22 @@ def daily_strategy_analysis(result) -> None:
             use_container_width=True, hide_index=True,
         )
 
-    decisions = chart[chart["Final action"] != "NO TRADE"]
+    decisions = chart[chart["Strategy action"] != "NO TRADE"]
     if decisions.empty:
-        st.info("No full Nandi OI V1 entry was approved on this day. That is a valid daily result: the five evidence gates did not all align.")
+        st.info("No paper entry was approved by this strategy on this day. That is a valid result: its own entry rules did not trigger.")
     else:
-        st.markdown("**Full Nandi OI V1 approved events on this day**")
+        st.markdown("**Strategy entry events on this day**")
         st.dataframe(
             decisions.reset_index()[[
-                "Timestamp", "Final action", "Nandi bullish score", "Nandi bearish score",
+                "Timestamp", "Strategy action", "Strategy bullish score", "Strategy bearish score",
                 "OI bullish score", "OI bearish score", "Price bullish", "Price bearish",
                 "Premium bullish", "Premium bearish", "Persistence bullish", "Persistence bearish",
             ]],
             use_container_width=True, hide_index=True,
         )
 
-    st.subheader("Every strategy tested on this trading day")
-    st.caption("This table keeps the tests comparable while still showing the technical method used by every strategy.")
+    st.subheader("Daily result for this strategy")
+    st.caption("Every selected day is kept, including days when the strategy found no paper entry.")
     daily_frame = pd.DataFrame(day_rows)
     st.dataframe(daily_frame, use_container_width=True, hide_index=True)
     st.download_button(
@@ -815,12 +821,74 @@ def daily_strategy_analysis(result) -> None:
     )
 
 
+def individual_strategy_period(prefix: str) -> tuple[date, date]:
+    """Use the same date choices for every dedicated strategy test screen."""
+    period = st.selectbox(
+        "Test period", ["Single day", "One week", "One month", "Custom dates"], key=f"{prefix}_period",
+    )
+    latest = date.today() - timedelta(days=1)
+    if period == "Single day":
+        selected = st.date_input("Trading date", value=latest, max_value=latest, key=f"{prefix}_day")
+        return selected, selected
+    if period == "One week":
+        end = st.date_input("Week ending date", value=latest, max_value=latest, key=f"{prefix}_week_end")
+        return end - timedelta(days=6), end
+    if period == "One month":
+        end = st.date_input("Month ending date", value=latest, max_value=latest, key=f"{prefix}_month_end")
+        return end - timedelta(days=29), end
+    first, second = st.columns(2)
+    start = first.date_input("Start date", value=latest - timedelta(days=29), max_value=latest, key=f"{prefix}_start")
+    end = second.date_input("End date", value=latest, min_value=start, max_value=latest, key=f"{prefix}_end")
+    return start, end
+
+
+def individual_oi_strategy_lab(strategy: str) -> None:
+    """Run and explain one OI strategy without placing it inside the unified comparison."""
+    title = f"{strategy} Test"
+    header(title, "One paper-research strategy • raw data, formula, charts and daily result")
+    st.info(
+        "This page tests only this strategy. It shows the strategy background, entry rule, raw option-chain rows and "
+        "each daily result on one screen. No broker order is sent."
+    )
+    prefix = "strategy_" + "".join(character.lower() if character.isalnum() else "_" for character in strategy)
+    start, end = individual_strategy_period(prefix)
+    first, second = st.columns(2)
+    first.metric("Start date", start.strftime("%d %b %Y"))
+    second.metric("End date", end.strftime("%d %b %Y"))
+    st.caption("Uses Upstox Plus historical nearest-weekly option snapshots in five-minute replay order. No future-data access.")
+    result_key = f"{prefix}_result"
+    if st.button(f"Run {strategy} Test", type="primary", use_container_width=True, key=f"{prefix}_run"):
+        progress_bar = st.progress(0.0, text=f"Loading {strategy} historical option data…")
+        try:
+            token = st.session_state.upstox_client.access_token
+            client = UpstoxHistoricalClient(access_token=token, timeout_seconds=20)
+
+            def progress(done: int, total: int, label: str) -> None:
+                progress_bar.progress(
+                    done / max(total, 1), text=f"Nearest-weekly options {done}/{total}: {label}",
+                )
+
+            weekly = client.build_snapshots(start, end, progress=progress, expiry_mode="weekly")
+            st.session_state[result_key] = run_one_oi_strategy(strategy, weekly)
+            progress_bar.progress(1.0, text=f"{strategy} test completed")
+            st.success(f"{strategy} historical replay completed. No broker order was placed.")
+        except (UpstoxAPIError, ValueError) as exc:
+            progress_bar.empty()
+            st.error(str(exc))
+
+    result = st.session_state.get(result_key)
+    if not result:
+        st.write(f"Choose dates and run the {strategy} test to see its own formula, evidence charts, raw OI table and daily paper result.")
+        return
+    daily_strategy_analysis(result, fixed_strategy_label=result.runs[0].label)
+
+
 def unified_backtest_lab() -> None:
     header("Unified Backtest", "Every implemented Nandi strategy • one comparable historical report")
     st.info(
-        "Nandi now keeps every strategy in one daily chart-led report. It tests OI flow, price structure, OI walls, "
-        "option premium/liquidity and persistence, then the final Nandi OI V1 rule and each saved RSI setup. "
-        "The daily view explains the data, indicator and paper-risk rule behind every result."
+        "This is the normal comparison report. It tests OI flow, price structure, OI walls, option premium/liquidity "
+        "and persistence, then the final Nandi OI V1 rule and each selected saved RSI setup. "
+        "Use the dedicated strategy screens for raw data, calculation and detailed charts."
     )
     st.caption(
         "Historical option data is replayed as five-minute snapshots without future-data access. "
@@ -904,13 +972,8 @@ def unified_backtest_lab() -> None:
         st.write("Run the full replay to inspect every OI evidence gate, final OI V1 and every saved RSI setup by trading day, with the underlying charts and strategy background.")
         return
 
-    daily_strategy_analysis(result)
-
-    st.divider()
-    st.markdown('<div class="nandi-section-label">WHOLE PERIOD COMPARISON</div>', unsafe_allow_html=True)
-
     summary = pd.DataFrame(result.summary_rows())
-    st.subheader("All strategy results across the selected period")
+    st.subheader("All strategy results")
     st.caption(
         "Use this to inspect historical evidence, not to choose a guaranteed winner. "
         "A result with fewer trades has less evidence than a result observed across many trades."
@@ -1169,6 +1232,25 @@ def rsi_backtest_lab() -> None:
             mime="text/csv", use_container_width=True,
         )
 
+        if weekly_snapshots and monthly_snapshots:
+            detail_name = strategy_name.strip() or selected_name
+            detail_rules = (
+                f"NIFTY RSI({result.length}) {result.lower:g}/{result.upper:g}; "
+                "5% option-premium stop; opposite RSI target"
+            )
+            detail_result = UnifiedBacktestResult(
+                weekly_result.start_date,
+                weekly_result.end_date,
+                (
+                    UnifiedStrategyRun(detail_name, "Nearest weekly", detail_rules, weekly_result),
+                    UnifiedStrategyRun(detail_name, "Nearest monthly", detail_rules, monthly_result),
+                ),
+                (), tuple(weekly_snapshots), tuple(monthly_snapshots),
+            )
+            st.divider()
+            st.markdown('<div class="nandi-section-label">RSI STRATEGY DETAIL</div>', unsafe_allow_html=True)
+            daily_strategy_analysis(detail_result)
+
         with st.expander("Weekly trade ledger"):
             weekly_rows = weekly_result.rows()
             if weekly_rows:
@@ -1221,8 +1303,13 @@ pages = {
     "Live OI Engine": live_engine,
     "Paper Trades": paper_trades,
     "Daily Report": daily_report,
-    "Backtest Lab": backtest_lab,
     "Unified Backtest": unified_backtest_lab,
+    "OI Flow Test": lambda: individual_oi_strategy_lab("OI flow"),
+    "Price Structure Test": lambda: individual_oi_strategy_lab("NIFTY price structure"),
+    "OI Wall Test": lambda: individual_oi_strategy_lab("OI-wall movement"),
+    "Premium & Liquidity Test": lambda: individual_oi_strategy_lab("Option premium and liquidity"),
+    "Persistence Test": lambda: individual_oi_strategy_lab("Three-snapshot OI persistence"),
+    "Nandi OI V1 Test": lambda: individual_oi_strategy_lab("Nandi OI V1"),
     "RSI Strategy Lab": rsi_backtest_lab,
     "Local Setup": local_setup,
     "Settings": settings,

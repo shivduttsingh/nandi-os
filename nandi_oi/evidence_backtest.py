@@ -123,15 +123,30 @@ class EvidenceBacktester:
         ),
     )
 
+    @classmethod
+    def variant(cls, name: str) -> EvidenceVariant:
+        for item in cls.VARIANTS:
+            if item.name == name:
+                return item
+        raise ValueError(f"Unknown OI evidence strategy: {name}")
+
+    def run_one(self, snapshots: Iterable[OptionSnapshot], name: str) -> EvidenceBacktestRun:
+        """Replay one named evidence strategy without calculating unrelated strategies."""
+        records = tuple(sorted(snapshots, key=lambda item: item.timestamp))
+        if not records:
+            raise ValueError("No historical snapshots were available for evidence backtesting")
+        variant = self.variant(name)
+        result = NandiBacktester(
+            stop_pct=0.20, target_pct=0.30,
+            engine_factory=lambda: EvidenceSignalEngine(variant),
+        ).run(records)
+        return EvidenceBacktestRun(variant.name, variant.rules, result)
+
     def run(self, snapshots: Iterable[OptionSnapshot]) -> EvidenceBacktestResult:
         records = tuple(sorted(snapshots, key=lambda item: item.timestamp))
         if not records:
             raise ValueError("No historical snapshots were available for evidence backtesting")
         runs = []
         for variant in self.VARIANTS:
-            factory = lambda variant=variant: EvidenceSignalEngine(variant)
-            result = NandiBacktester(
-                stop_pct=0.20, target_pct=0.30, engine_factory=factory,
-            ).run(records)
-            runs.append(EvidenceBacktestRun(variant.name, variant.rules, result))
+            runs.append(self.run_one(records, variant.name))
         return EvidenceBacktestResult(tuple(runs))

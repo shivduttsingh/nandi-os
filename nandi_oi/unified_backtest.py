@@ -6,7 +6,7 @@ import re
 from typing import Iterable, Mapping
 
 from .backtest import BacktestResult, NandiBacktester
-from .evidence_backtest import EvidenceBacktester
+from .evidence_backtest import EvidenceBacktester, EvidenceSignalEngine
 from .engine import NandiOIEngine
 from .models import OptionSnapshot
 from .rsi_backtest import RsiLevelBacktester, RsiTouchResult, RsiTouchAnalyzer, TIMEFRAMES, wilder_rsi
@@ -89,6 +89,16 @@ def strategy_background(strategy: str, rules: str) -> StrategyBackground:
         "Tests this saved RSI configuration separately on the selected expiry contract.",
         length, lower, upper,
     )
+
+
+OI_STRATEGY_NAMES = (
+    "OI flow",
+    "NIFTY price structure",
+    "OI-wall movement",
+    "Option premium and liquidity",
+    "Three-snapshot OI persistence",
+    "Nandi OI V1",
+)
 
 
 @dataclass(frozen=True)
@@ -217,21 +227,29 @@ class UnifiedBacktestResult:
         return ce_wall, pe_wall
 
     def daily_chart_rows(
-        self, selected_date: date, *, rsi_length: int = 14, rsi_lower: float = 24.0, rsi_upper: float = 72.0,
+        self, selected_date: date, *, run: UnifiedStrategyRun | None = None,
+        rsi_length: int = 14, rsi_lower: float = 24.0, rsi_upper: float = 72.0,
     ) -> list[dict[str, object]]:
         """Return the same historical evidence Nandi used, not a decorative chart."""
-        ordered = tuple(sorted(self.weekly_snapshots, key=lambda item: item.timestamp))
+        source = self._snapshots_for(run) if run else self.weekly_snapshots
+        ordered = tuple(sorted(source, key=lambda item: item.timestamp))
         rsi_values = wilder_rsi([item.spot for item in ordered], rsi_length)
         context_values = technical_context([item.spot for item in ordered])
         engine = NandiOIEngine()
+        strategy_engine: NandiOIEngine | EvidenceSignalEngine | None = None
         current_day: date | None = None
         rows: list[dict[str, object]] = []
         for snapshot, rsi, context in zip(ordered, rsi_values, context_values):
             day = snapshot.timestamp.date()
             if day != current_day:
                 engine = NandiOIEngine()
+                if run and run.strategy in OI_STRATEGY_NAMES and run.strategy != "Nandi OI V1":
+                    strategy_engine = EvidenceSignalEngine(EvidenceBacktester.variant(run.strategy))
+                else:
+                    strategy_engine = None
                 current_day = day
             decision = engine.add_snapshot(snapshot)
+            strategy_decision = strategy_engine.add_snapshot(snapshot) if strategy_engine else decision
             oi_bull, oi_bear, _ = engine._oi_premium_scores(snapshot)
             price_bull, price_bear, _ = engine._price_scores(snapshot)
             wall_bull, wall_bear, _ = engine._wall_scores(snapshot)
@@ -248,6 +266,7 @@ class UnifiedBacktestResult:
                 rows.append({
                     "Timestamp": snapshot.timestamp,
                     "NIFTY spot": snapshot.spot,
+                    "NIFTY change": snapshot.spot_change,
                     "Recent high": snapshot.recent_high,
                     "Recent low": snapshot.recent_low,
                     "Nearby CE ΔOI": ce_change,
@@ -270,6 +289,9 @@ class UnifiedBacktestResult:
                     "Nandi bullish score": decision.bullish_score,
                     "Nandi bearish score": decision.bearish_score,
                     "Final action": decision.action,
+                    "Strategy bullish score": strategy_decision.bullish_score,
+                    "Strategy bearish score": strategy_decision.bearish_score,
+                    "Strategy action": strategy_decision.action,
                     f"RSI({rsi_length})": round(rsi, 2) if rsi is not None else None,
                     "RSI lower level": rsi_lower,
                     "RSI upper level": rsi_upper,
@@ -277,9 +299,10 @@ class UnifiedBacktestResult:
                 })
         return rows
 
-    def option_chain_rows(self, timestamp: datetime) -> list[dict[str, object]]:
+    def option_chain_rows(self, timestamp: datetime, run: UnifiedStrategyRun | None = None) -> list[dict[str, object]]:
         """Expose the exact ATM ±5 rows used for an OI point on the daily chart."""
-        snapshot = next((item for item in self.weekly_snapshots if item.timestamp == timestamp), None)
+        source = self._snapshots_for(run) if run else self.weekly_snapshots
+        snapshot = next((item for item in source if item.timestamp == timestamp), None)
         if not snapshot:
             raise ValueError("The requested historical option snapshot is not available")
         engine = NandiOIEngine()
@@ -308,15 +331,15 @@ class UnifiedBacktestResult:
 
     def data_provenance_rows(self, timestamp: datetime, run: UnifiedStrategyRun) -> list[dict[str, object]]:
         """State the data source and replay limits alongside each chart and calculation."""
-        snapshot = next((item for item in self.weekly_snapshots if item.timestamp == timestamp), None)
+        snapshot = next((item for item in self._snapshots_for(run) if item.timestamp == timestamp), None)
         if not snapshot:
             raise ValueError("The requested historical option snapshot is not available")
         return [
             {"Item": "Underlying", "Value": "NIFTY spot index"},
             {"Item": "Option data source", "Value": "Upstox Plus expired-instrument historical option candles"},
             {"Item": "Snapshot interval", "Value": "Five-minute historical replay"},
-            {"Item": "OI strategy contract", "Value": f"Nearest weekly expiry • {snapshot.expiry}"},
-            {"Item": "Displayed option rows", "Value": "ATM ±5 strikes (the same nearby window used by Nandi OI V1)"},
+            {"Item": "Option contract used", "Value": f"{run.contract} • {snapshot.expiry}"},
+            {"Item": "Displayed option rows", "Value": "ATM ±5 strikes (the exact nearby window in this replay)"},
             {"Item": "Selected strategy contract", "Value": run.contract},
             {"Item": "Selected timestamp", "Value": snapshot.timestamp.isoformat(sep=" ", timespec="minutes")},
             {"Item": "Future-data access", "Value": "None — calculations replay each snapshot chronologically"},
@@ -363,6 +386,111 @@ class UnifiedBacktestResult:
             {"Approval gate": "Persistence", "Requirement": "Three confirming snapshots", "Observed": f"Bull {evidence.get('Persistence bullish', 0):.0f} / Bear {evidence.get('Persistence bearish', 0):.0f}", "Pass": bool(evidence.get("Persistence bullish") or evidence.get("Persistence bearish"))},
             {"Approval gate": "Final paper action", "Requirement": "All relevant gates align", "Observed": str(evidence.get("Final action", "NO TRADE")), "Pass": evidence.get("Final action") != "NO TRADE"},
         ]
+
+    @staticmethod
+    def strategy_calculation_rows(run: UnifiedStrategyRun, evidence: Mapping[str, object]) -> list[dict[str, object]]:
+        """Display the specific formula for one strategy instead of a generic all-strategy table."""
+        if run.strategy == "Nandi OI V1":
+            return UnifiedBacktestResult.calculation_rows(evidence)
+        if run.strategy == "OI flow":
+            bull, bear = float(evidence["OI bullish score"]), float(evidence["OI bearish score"])
+            return [
+                {"Calculation": "Bullish nearby OI score", "Observed": bull, "Rule": "At least 55"},
+                {"Calculation": "Bearish nearby OI score", "Observed": bear, "Rule": "At least 55"},
+                {"Calculation": "Bullish lead", "Observed": round(bull - bear, 1), "Rule": "At least +10 for CE"},
+                {"Calculation": "Bearish lead", "Observed": round(bear - bull, 1), "Rule": "At least +10 for PE"},
+            ]
+        if run.strategy == "NIFTY price structure":
+            return [
+                {"Calculation": "NIFTY spot", "Observed": evidence["NIFTY spot"], "Rule": "Compare with recent high/low"},
+                {"Calculation": "NIFTY change", "Observed": evidence["NIFTY change"], "Rule": "Must agree with breakout direction"},
+                {"Calculation": "Recent high", "Observed": evidence["Recent high"], "Rule": "Spot above for a bullish breakout"},
+                {"Calculation": "Recent low", "Observed": evidence["Recent low"], "Rule": "Spot below for a bearish breakdown"},
+            ]
+        if run.strategy == "OI-wall movement":
+            return [
+                {"Calculation": "CE OI wall", "Observed": evidence["CE OI wall"], "Rule": "Largest nearby call OI strike"},
+                {"Calculation": "PE OI wall", "Observed": evidence["PE OI wall"], "Rule": "Largest nearby put OI strike"},
+                {"Calculation": "Bullish wall score", "Observed": evidence["Wall bullish"], "Rule": "100 means both walls shifted upward"},
+                {"Calculation": "Bearish wall score", "Observed": evidence["Wall bearish"], "Rule": "100 means both walls shifted downward"},
+            ]
+        if run.strategy == "Option premium and liquidity":
+            return [
+                {"Calculation": "ATM CE premium", "Observed": evidence["ATM CE premium"], "Rule": "Premium must confirm CE direction"},
+                {"Calculation": "ATM PE premium", "Observed": evidence["ATM PE premium"], "Rule": "Premium must confirm PE direction"},
+                {"Calculation": "Bullish premium score", "Observed": evidence["Premium bullish"], "Rule": "100 with liquidity quality"},
+                {"Calculation": "Bearish premium score", "Observed": evidence["Premium bearish"], "Rule": "100 with liquidity quality"},
+                {"Calculation": "Liquidity score", "Observed": evidence["Liquidity score"], "Rule": "100 means volume/spread passed"},
+            ]
+        if run.strategy == "Three-snapshot OI persistence":
+            return [
+                {"Calculation": "Bullish persistence", "Observed": evidence["Persistence bullish"], "Rule": "100 after three bullish OI snapshots"},
+                {"Calculation": "Bearish persistence", "Observed": evidence["Persistence bearish"], "Rule": "100 after three bearish OI snapshots"},
+                {"Calculation": "Required snapshots", "Observed": 3, "Rule": "Same OI direction must persist"},
+            ]
+        return [
+            {"Calculation": f"RSI({run.background.rsi_length})", "Observed": evidence.get(f"RSI({run.background.rsi_length})"), "Rule": run.background.entry_rule},
+            {"Calculation": "Lower RSI level", "Observed": run.background.rsi_lower, "Rule": "CE entry zone"},
+            {"Calculation": "Upper RSI level", "Observed": run.background.rsi_upper, "Rule": "PE entry zone"},
+        ]
+
+    @staticmethod
+    def strategy_approval_rows(run: UnifiedStrategyRun, evidence: Mapping[str, object]) -> list[dict[str, object]]:
+        if run.strategy == "Nandi OI V1":
+            return UnifiedBacktestResult.approval_rows(evidence)
+        if run.strategy == "OI flow":
+            bull, bear = float(evidence["OI bullish score"]), float(evidence["OI bearish score"])
+            return [
+                {"Approval gate": "Bullish OI entry", "Requirement": "Score ≥55 and lead ≥10", "Observed": f"Score {bull:.1f}, lead {bull-bear:.1f}", "Pass": bull >= 55 and bull - bear >= 10},
+                {"Approval gate": "Bearish OI entry", "Requirement": "Score ≥55 and lead ≥10", "Observed": f"Score {bear:.1f}, lead {bear-bull:.1f}", "Pass": bear >= 55 and bear - bull >= 10},
+            ]
+        if run.strategy == "NIFTY price structure":
+            return [
+                {"Approval gate": "Bullish breakout", "Requirement": "Spot > recent high and positive change", "Observed": f"Score {evidence['Price bullish']:.0f}", "Pass": evidence["Price bullish"] == 100},
+                {"Approval gate": "Bearish breakdown", "Requirement": "Spot < recent low and negative change", "Observed": f"Score {evidence['Price bearish']:.0f}", "Pass": evidence["Price bearish"] == 100},
+            ]
+        if run.strategy == "OI-wall movement":
+            return [
+                {"Approval gate": "Bullish wall shift", "Requirement": "Both nearby OI walls move up", "Observed": evidence["Wall bullish"], "Pass": evidence["Wall bullish"] == 100},
+                {"Approval gate": "Bearish wall shift", "Requirement": "Both nearby OI walls move down", "Observed": evidence["Wall bearish"], "Pass": evidence["Wall bearish"] == 100},
+            ]
+        if run.strategy == "Option premium and liquidity":
+            return [
+                {"Approval gate": "Bullish premium", "Requirement": "ATM CE premium + liquidity pass", "Observed": evidence["Premium bullish"], "Pass": evidence["Premium bullish"] == 100 and evidence["Liquidity score"] == 100},
+                {"Approval gate": "Bearish premium", "Requirement": "ATM PE premium + liquidity pass", "Observed": evidence["Premium bearish"], "Pass": evidence["Premium bearish"] == 100 and evidence["Liquidity score"] == 100},
+            ]
+        if run.strategy == "Three-snapshot OI persistence":
+            return [
+                {"Approval gate": "Bullish persistence", "Requirement": "Three bullish OI snapshots", "Observed": evidence["Persistence bullish"], "Pass": evidence["Persistence bullish"] == 100},
+                {"Approval gate": "Bearish persistence", "Requirement": "Three bearish OI snapshots", "Observed": evidence["Persistence bearish"], "Pass": evidence["Persistence bearish"] == 100},
+            ]
+        rsi = evidence.get(f"RSI({run.background.rsi_length})")
+        return [
+            {"Approval gate": "CE RSI entry", "Requirement": f"RSI ≤ {run.background.rsi_lower:g}", "Observed": rsi, "Pass": rsi is not None and rsi <= run.background.rsi_lower},
+            {"Approval gate": "PE RSI entry", "Requirement": f"RSI ≥ {run.background.rsi_upper:g}", "Observed": rsi, "Pass": rsi is not None and rsi >= run.background.rsi_upper},
+        ]
+
+
+def run_one_oi_strategy(strategy: str, snapshots: Iterable[OptionSnapshot]) -> UnifiedBacktestResult:
+    """Build one auditable daily result for one named OI strategy screen."""
+    weekly = tuple(sorted(snapshots, key=lambda item: item.timestamp))
+    if not weekly:
+        raise ValueError("No nearest-weekly historical snapshots were available")
+    if strategy not in OI_STRATEGY_NAMES:
+        raise ValueError(f"Unknown OI strategy: {strategy}")
+    if strategy == "Nandi OI V1":
+        run = UnifiedStrategyRun(
+            strategy, "Nearest weekly", UnifiedBacktester.OI_RULES,
+            NandiBacktester(stop_pct=0.20, target_pct=0.30).run(weekly),
+        )
+    else:
+        evidence = EvidenceBacktester().run_one(weekly, strategy)
+        run = UnifiedStrategyRun(
+            evidence.name, "Nearest weekly evidence check", evidence.rules, evidence.result,
+        )
+    return UnifiedBacktestResult(
+        weekly[0].timestamp.date(), weekly[-1].timestamp.date(), (run,), (), weekly, (),
+    )
 
 
 class UnifiedBacktester:

@@ -2,12 +2,93 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+import re
 from typing import Iterable, Mapping
 
 from .backtest import BacktestResult, NandiBacktester
 from .evidence_backtest import EvidenceBacktester
+from .engine import NandiOIEngine
 from .models import OptionSnapshot
-from .rsi_backtest import RsiLevelBacktester, RsiTouchResult, RsiTouchAnalyzer, TIMEFRAMES
+from .rsi_backtest import RsiLevelBacktester, RsiTouchResult, RsiTouchAnalyzer, TIMEFRAMES, wilder_rsi
+from .technical_indicators import technical_context
+
+
+@dataclass(frozen=True)
+class StrategyBackground:
+    """Plain-language explanation of the exact historical test being shown."""
+
+    data_used: str
+    technical_analysis: str
+    entry_rule: str
+    paper_risk: str
+    purpose: str
+    rsi_length: int = 14
+    rsi_lower: float = 24.0
+    rsi_upper: float = 72.0
+
+
+def strategy_background(strategy: str, rules: str) -> StrategyBackground:
+    """Keep every backtest comparable while making its inputs explicit to the user."""
+    descriptions = {
+        "OI flow": StrategyBackground(
+            "Nearby call and put change-in-OI plus option premium movement.",
+            "Open-interest activity: call covering / put writing versus put covering / call writing.",
+            "Validation signal needs a 55+ directional OI score and at least a 10-point lead.",
+            "20% option-premium stop and 30% target, used only to compare this one evidence gate.",
+            "Shows whether OI positioning alone had useful historical direction before it is combined with other checks.",
+        ),
+        "NIFTY price structure": StrategyBackground(
+            "NIFTY spot, intraday recent high and intraday recent low.",
+            "Price-action breakout and breakdown confirmation.",
+            "Buy CE only after an upward breakout; buy PE only after a downward breakdown.",
+            "20% option-premium stop and 30% target, used only to compare this one evidence gate.",
+            "Tests price structure by itself; it is not the full Nandi decision.",
+        ),
+        "OI-wall movement": StrategyBackground(
+            "Highest nearby call-OI and put-OI strike on each five-minute snapshot.",
+            "Support/resistance wall movement around the ATM option strikes.",
+            "Both CE and PE OI walls must shift upward for CE or downward for PE.",
+            "20% option-premium stop and 30% target, used only to compare this one evidence gate.",
+            "Tests whether moving OI walls added directional information on their own.",
+        ),
+        "Option premium and liquidity": StrategyBackground(
+            "ATM CE/PE premium change, volume and bid/ask spread.",
+            "Option momentum with a liquidity quality filter.",
+            "ATM premium must rise and the option must have usable volume and spread.",
+            "20% option-premium stop and 30% target, used only to compare this one evidence gate.",
+            "Tests whether option confirmation alone was informative before it is combined with OI and price.",
+        ),
+        "Three-snapshot OI persistence": StrategyBackground(
+            "Three consecutive nearby OI-flow readings from the same NIFTY option chain.",
+            "Persistence: does the same directional positioning remain after the first snapshot?",
+            "A direction must remain valid for all three required snapshots.",
+            "20% option-premium stop and 30% target, used only to compare this one evidence gate.",
+            "Prevents a one-snapshot OI move from being treated as a reliable setup.",
+        ),
+        "Nandi OI V1": StrategyBackground(
+            "OI flow, OI walls, NIFTY price structure, ATM premium/liquidity and three-snapshot persistence.",
+            "A weighted evidence score with price and option-premium confirmation.",
+            "Score must be at least 80/100 with a 20-point lead, price/premium confirmation and persistence.",
+            "20% option-premium stop, 30% premium target, maximum three paper trades per day.",
+            "This is the production paper-research rule: all OI evidence gates must agree before a signal is approved.",
+        ),
+    }
+    if strategy in descriptions:
+        return descriptions[strategy]
+
+    match = re.search(r"RSI\((\d+)\)\s+([\d.]+)/([\d.]+)", rules)
+    if match:
+        length, lower, upper = int(match.group(1)), float(match.group(2)), float(match.group(3))
+    else:
+        length, lower, upper = 14, 24.0, 72.0
+    return StrategyBackground(
+        "Five-minute NIFTY spot history and the nearest weekly or monthly option premium.",
+        f"Wilder RSI({length}) calculated without future-data access.",
+        f"Buy CE on an RSI touch at or below {lower:g}; buy PE on an RSI touch at or above {upper:g}.",
+        "5% option-premium stop; exit when RSI reaches the opposite configured level.",
+        "Tests this saved RSI configuration separately on the selected expiry contract.",
+        length, lower, upper,
+    )
 
 
 @dataclass(frozen=True)
@@ -22,6 +103,10 @@ class UnifiedStrategyRun:
     @property
     def label(self) -> str:
         return f"{self.strategy} — {self.contract}"
+
+    @property
+    def background(self) -> StrategyBackground:
+        return strategy_background(self.strategy, self.rules)
 
     def summary_row(self) -> dict[str, object]:
         return {
@@ -44,6 +129,8 @@ class UnifiedBacktestResult:
     end_date: date
     runs: tuple[UnifiedStrategyRun, ...]
     rsi_touches: tuple[tuple[str, RsiTouchResult], ...] = ()
+    weekly_snapshots: tuple[OptionSnapshot, ...] = ()
+    monthly_snapshots: tuple[OptionSnapshot, ...] = ()
 
     def summary_rows(self) -> list[dict[str, object]]:
         return [run.summary_row() for run in self.runs]
@@ -80,6 +167,202 @@ class UnifiedBacktestResult:
             for row in touches.summary_rows():
                 rows.append({"Strategy": strategy, **row})
         return rows
+
+    def strategy_run(self, label: str) -> UnifiedStrategyRun:
+        for run in self.runs:
+            if run.label == label:
+                return run
+        raise ValueError(f"Unknown strategy run: {label}")
+
+    def available_dates(self) -> tuple[date, ...]:
+        return tuple(sorted({item.timestamp.date() for item in self.weekly_snapshots}))
+
+    def _snapshots_for(self, run: UnifiedStrategyRun) -> tuple[OptionSnapshot, ...]:
+        return self.monthly_snapshots if "monthly" in run.contract.lower() else self.weekly_snapshots
+
+    def daily_strategy_rows(self, selected_date: date | None = None) -> list[dict[str, object]]:
+        """One daily outcome row per strategy, including days with no paper entry."""
+        rows: list[dict[str, object]] = []
+        for run in self.runs:
+            snapshots = self._snapshots_for(run)
+            dates = sorted({item.timestamp.date() for item in snapshots})
+            for day in dates:
+                if selected_date and day != selected_date:
+                    continue
+                day_snapshots = [item for item in snapshots if item.timestamp.date() == day]
+                trades = [trade for trade in run.result.trades if trade.opened_at.date() == day]
+                wins = sum(trade.pnl_points > 0 for trade in trades)
+                points = round(sum(trade.pnl_points for trade in trades), 2)
+                rows.append({
+                    "Date": day,
+                    "Strategy": run.strategy,
+                    "Contract": run.contract,
+                    "Technical analysis": run.background.technical_analysis,
+                    "Historical snapshots": len(day_snapshots),
+                    "Paper trades": len(trades),
+                    "Wins": wins,
+                    "Win rate %": round(wins / len(trades) * 100, 1) if trades else 0.0,
+                    "Net premium points": points,
+                    "Daily result": "No paper entry" if not trades else ("Net positive" if points > 0 else "Net negative" if points < 0 else "Flat"),
+                })
+        return sorted(rows, key=lambda item: (item["Date"], item["Strategy"], item["Contract"]))
+
+    @staticmethod
+    def _walls(engine: NandiOIEngine, snapshot: OptionSnapshot) -> tuple[float | None, float | None]:
+        legs = engine._nearby_legs(snapshot)
+        calls = [leg for leg in legs if leg.side == "CE"]
+        puts = [leg for leg in legs if leg.side == "PE"]
+        ce_wall = max(calls, key=lambda item: item.oi).strike if calls else None
+        pe_wall = max(puts, key=lambda item: item.oi).strike if puts else None
+        return ce_wall, pe_wall
+
+    def daily_chart_rows(
+        self, selected_date: date, *, rsi_length: int = 14, rsi_lower: float = 24.0, rsi_upper: float = 72.0,
+    ) -> list[dict[str, object]]:
+        """Return the same historical evidence Nandi used, not a decorative chart."""
+        ordered = tuple(sorted(self.weekly_snapshots, key=lambda item: item.timestamp))
+        rsi_values = wilder_rsi([item.spot for item in ordered], rsi_length)
+        context_values = technical_context([item.spot for item in ordered])
+        engine = NandiOIEngine()
+        current_day: date | None = None
+        rows: list[dict[str, object]] = []
+        for snapshot, rsi, context in zip(ordered, rsi_values, context_values):
+            day = snapshot.timestamp.date()
+            if day != current_day:
+                engine = NandiOIEngine()
+                current_day = day
+            decision = engine.add_snapshot(snapshot)
+            oi_bull, oi_bear, _ = engine._oi_premium_scores(snapshot)
+            price_bull, price_bear, _ = engine._price_scores(snapshot)
+            wall_bull, wall_bear, _ = engine._wall_scores(snapshot)
+            premium_bull, premium_bear, liquidity, _ = engine._premium_liquidity_scores(snapshot)
+            persistent_bull, persistent_bear = engine._persistent_direction()
+            nearby = engine._nearby_legs(snapshot)
+            ce_change = sum(item.change_oi for item in nearby if item.side == "CE")
+            pe_change = sum(item.change_oi for item in nearby if item.side == "PE")
+            ce_wall, pe_wall = self._walls(engine, snapshot)
+            atm = engine._atm(snapshot)
+            atm_ce = next((item for item in nearby if item.side == "CE" and item.strike == atm), None)
+            atm_pe = next((item for item in nearby if item.side == "PE" and item.strike == atm), None)
+            if day == selected_date:
+                rows.append({
+                    "Timestamp": snapshot.timestamp,
+                    "NIFTY spot": snapshot.spot,
+                    "Recent high": snapshot.recent_high,
+                    "Recent low": snapshot.recent_low,
+                    "Nearby CE ΔOI": ce_change,
+                    "Nearby PE ΔOI": pe_change,
+                    "CE OI wall": ce_wall,
+                    "PE OI wall": pe_wall,
+                    "ATM CE premium": atm_ce.ltp if atm_ce else None,
+                    "ATM PE premium": atm_pe.ltp if atm_pe else None,
+                    "OI bullish score": round(oi_bull, 1),
+                    "OI bearish score": round(oi_bear, 1),
+                    "Price bullish": price_bull,
+                    "Price bearish": price_bear,
+                    "Wall bullish": wall_bull,
+                    "Wall bearish": wall_bear,
+                    "Premium bullish": premium_bull,
+                    "Premium bearish": premium_bear,
+                    "Liquidity score": liquidity,
+                    "Persistence bullish": 100.0 if persistent_bull else 0.0,
+                    "Persistence bearish": 100.0 if persistent_bear else 0.0,
+                    "Nandi bullish score": decision.bullish_score,
+                    "Nandi bearish score": decision.bearish_score,
+                    "Final action": decision.action,
+                    f"RSI({rsi_length})": round(rsi, 2) if rsi is not None else None,
+                    "RSI lower level": rsi_lower,
+                    "RSI upper level": rsi_upper,
+                    **context,
+                })
+        return rows
+
+    def option_chain_rows(self, timestamp: datetime) -> list[dict[str, object]]:
+        """Expose the exact ATM ±5 rows used for an OI point on the daily chart."""
+        snapshot = next((item for item in self.weekly_snapshots if item.timestamp == timestamp), None)
+        if not snapshot:
+            raise ValueError("The requested historical option snapshot is not available")
+        engine = NandiOIEngine()
+        atm = engine._atm(snapshot)
+        rows = []
+        for leg in sorted(engine._nearby_legs(snapshot), key=lambda item: (item.strike, item.side)):
+            rows.append({
+                "Timestamp": snapshot.timestamp,
+                "Expiry": snapshot.expiry,
+                "NIFTY spot": snapshot.spot,
+                "ATM strike": atm,
+                "Strike": leg.strike,
+                "Side": leg.side,
+                "Distance from ATM": round(leg.strike - atm, 2),
+                "Open interest": leg.oi,
+                "Change in OI": leg.change_oi,
+                "Option premium": leg.ltp,
+                "Premium change": leg.change_ltp,
+                "Volume": leg.volume,
+                "Bid": leg.bid,
+                "Ask": leg.ask,
+                "Spread %": round(leg.spread_pct, 2),
+                "OI/premium activity": leg.activity,
+            })
+        return rows
+
+    def data_provenance_rows(self, timestamp: datetime, run: UnifiedStrategyRun) -> list[dict[str, object]]:
+        """State the data source and replay limits alongside each chart and calculation."""
+        snapshot = next((item for item in self.weekly_snapshots if item.timestamp == timestamp), None)
+        if not snapshot:
+            raise ValueError("The requested historical option snapshot is not available")
+        return [
+            {"Item": "Underlying", "Value": "NIFTY spot index"},
+            {"Item": "Option data source", "Value": "Upstox Plus expired-instrument historical option candles"},
+            {"Item": "Snapshot interval", "Value": "Five-minute historical replay"},
+            {"Item": "OI strategy contract", "Value": f"Nearest weekly expiry • {snapshot.expiry}"},
+            {"Item": "Displayed option rows", "Value": "ATM ±5 strikes (the same nearby window used by Nandi OI V1)"},
+            {"Item": "Selected strategy contract", "Value": run.contract},
+            {"Item": "Selected timestamp", "Value": snapshot.timestamp.isoformat(sep=" ", timespec="minutes")},
+            {"Item": "Future-data access", "Value": "None — calculations replay each snapshot chronologically"},
+            {"Item": "Broker orders", "Value": "None — paper research only"},
+        ]
+
+    @staticmethod
+    def calculation_rows(evidence: Mapping[str, object]) -> list[dict[str, object]]:
+        """Show the exact weighted score calculation used by Nandi OI V1."""
+        components = (
+            ("OI flow", 0.35, "OI bullish score", "OI bearish score", "Nearby CE/PE option-chain positioning"),
+            ("NIFTY price structure", 0.25, "Price bullish", "Price bearish", "Breakout above recent high or breakdown below recent low"),
+            ("OI-wall movement", 0.15, "Wall bullish", "Wall bearish", "Largest nearby CE and PE OI walls move together"),
+            ("ATM option premium", 0.10, "Premium bullish", "Premium bearish", "ATM premium rises with usable liquidity"),
+            ("Three-snapshot persistence", 0.10, "Persistence bullish", "Persistence bearish", "The OI direction remains confirmed for three snapshots"),
+            ("Liquidity quality", 0.05, "Liquidity score", "Liquidity score", "Volume and bid/ask spread pass the quality filter"),
+        )
+        rows: list[dict[str, object]] = []
+        for name, weight, bull_key, bear_key, purpose in components:
+            bull = float(evidence.get(bull_key, 0.0) or 0.0)
+            bear = float(evidence.get(bear_key, 0.0) or 0.0)
+            rows.append({
+                "Calculation": name,
+                "Weight": f"{weight * 100:.0f}%",
+                "Bullish raw": round(bull, 1),
+                "Bullish contribution": round(bull * weight, 1),
+                "Bearish raw": round(bear, 1),
+                "Bearish contribution": round(bear * weight, 1),
+                "What Nandi checks": purpose,
+            })
+        return rows
+
+    @staticmethod
+    def approval_rows(evidence: Mapping[str, object]) -> list[dict[str, object]]:
+        """Make the non-score approval gates visible beside the weighted calculation."""
+        bull = float(evidence.get("Nandi bullish score", 0.0) or 0.0)
+        bear = float(evidence.get("Nandi bearish score", 0.0) or 0.0)
+        lead = abs(bull - bear)
+        return [
+            {"Approval gate": "Score", "Requirement": "At least 80/100", "Observed": f"Bull {bull:.1f} / Bear {bear:.1f}", "Pass": max(bull, bear) >= 80},
+            {"Approval gate": "Directional lead", "Requirement": "At least 20 points", "Observed": f"{lead:.1f} points", "Pass": lead >= 20},
+            {"Approval gate": "NIFTY price", "Requirement": "Breakout or breakdown", "Observed": f"Bull {evidence.get('Price bullish', 0):.0f} / Bear {evidence.get('Price bearish', 0):.0f}", "Pass": bool(evidence.get("Price bullish") or evidence.get("Price bearish"))},
+            {"Approval gate": "ATM premium", "Requirement": "Premium confirmation", "Observed": f"Bull {evidence.get('Premium bullish', 0):.0f} / Bear {evidence.get('Premium bearish', 0):.0f}", "Pass": bool(evidence.get("Premium bullish") or evidence.get("Premium bearish"))},
+            {"Approval gate": "Persistence", "Requirement": "Three confirming snapshots", "Observed": f"Bull {evidence.get('Persistence bullish', 0):.0f} / Bear {evidence.get('Persistence bearish', 0):.0f}", "Pass": bool(evidence.get("Persistence bullish") or evidence.get("Persistence bearish"))},
+            {"Approval gate": "Final paper action", "Requirement": "All relevant gates align", "Observed": str(evidence.get("Final action", "NO TRADE")), "Pass": evidence.get("Final action") != "NO TRADE"},
+        ]
 
 
 class UnifiedBacktester:
@@ -161,5 +444,5 @@ class UnifiedBacktester:
                     ),
                 ))
         return UnifiedBacktestResult(
-            weekly[0].timestamp.date(), weekly[-1].timestamp.date(), tuple(runs), tuple(touch_results),
+            weekly[0].timestamp.date(), weekly[-1].timestamp.date(), tuple(runs), tuple(touch_results), weekly, monthly,
         )

@@ -667,12 +667,160 @@ def backtest_lab() -> None:
         st.warning("The strategy produced no approved entries in the selected period.")
 
 
+def daily_strategy_analysis(result) -> None:
+    """One chart-led daily workspace for all historical strategies and OI evidence."""
+    dates = result.available_dates()
+    if not dates:
+        st.warning("This saved result was created before daily evidence was available. Run the full backtest again.")
+        return
+
+    st.markdown('<div class="nandi-section-label">ONE DAILY WORKSPACE</div>', unsafe_allow_html=True)
+    st.subheader("Daily strategy analysis")
+    st.caption(
+        "Choose one trading day and one strategy. The charts, the OI evidence, the technical analysis and the actual "
+        "paper result stay together here—there is no need to open separate strategy pages."
+    )
+    first, second = st.columns(2)
+    selected_day = first.selectbox(
+        "Trading day to inspect", list(reversed(dates)),
+        format_func=lambda item: item.strftime("%A, %d %b %Y"),
+    )
+    labels = [run.label for run in result.runs]
+    selected_label = second.selectbox("Strategy to inspect", labels)
+    run = result.strategy_run(selected_label)
+    background = run.background
+
+    st.markdown('<div class="nandi-section-label">STRATEGY BACKGROUND</div>', unsafe_allow_html=True)
+    st.subheader(run.label)
+    source, technical, entry, risk = st.columns(4)
+    source.markdown("**Data used**")
+    source.caption(background.data_used)
+    technical.markdown("**Technical analysis**")
+    technical.caption(background.technical_analysis)
+    entry.markdown("**Entry / confirmation**")
+    entry.caption(background.entry_rule)
+    risk.markdown("**Paper risk rule**")
+    risk.caption(background.paper_risk)
+    st.info(background.purpose)
+
+    day_rows = result.daily_strategy_rows(selected_day)
+    selected_outcome = next(
+        (row for row in day_rows if row["Strategy"] == run.strategy and row["Contract"] == run.contract),
+        None,
+    )
+    if selected_outcome:
+        o1, o2, o3, o4, o5 = st.columns(5)
+        o1.metric("Historical snapshots", selected_outcome["Historical snapshots"])
+        o2.metric("Paper trades", selected_outcome["Paper trades"])
+        o3.metric("Wins", selected_outcome["Wins"])
+        o4.metric("Net premium points", selected_outcome["Net premium points"])
+        o5.metric("Daily result", selected_outcome["Daily result"])
+
+    chart_rows = result.daily_chart_rows(
+        selected_day,
+        rsi_length=background.rsi_length,
+        rsi_lower=background.rsi_lower,
+        rsi_upper=background.rsi_upper,
+    )
+    if not chart_rows:
+        st.warning("No nearest-weekly historical snapshots were returned for this day.")
+        return
+    chart = pd.DataFrame(chart_rows).set_index("Timestamp")
+    st.markdown('<div class="nandi-section-label">SAME DATA NANDI REPLAYED</div>', unsafe_allow_html=True)
+    st.subheader("NIFTY price structure and OI walls")
+    st.caption("NIFTY spot is compared with its historical recent high/low. The CE and PE OI-wall lines show where the largest nearby option positioning sat on each snapshot.")
+    price, walls = st.columns(2)
+    price.line_chart(chart[["NIFTY spot", "Recent high", "Recent low"]])
+    walls.line_chart(chart[["CE OI wall", "PE OI wall"]])
+
+    st.subheader("OI flow and final evidence score")
+    st.caption("These are calculated from the actual five-minute option-chain snapshots used in the replay—not invented chart values.")
+    oi, score = st.columns(2)
+    oi.bar_chart(chart[["Nearby CE ΔOI", "Nearby PE ΔOI"]])
+    score.line_chart(chart[["OI bullish score", "OI bearish score", "Nandi bullish score", "Nandi bearish score"]])
+
+    st.subheader(f"RSI({background.rsi_length}) and option confirmation")
+    st.caption("RSI is shown for the currently selected strategy. The horizontal reference lines are its saved lower and upper levels; premium lines are the ATM option values Nandi checked.")
+    rsi_column = f"RSI({background.rsi_length})"
+    rsi, premium = st.columns(2)
+    rsi.line_chart(chart[[rsi_column, "RSI lower level", "RSI upper level"]])
+    premium.line_chart(chart[["ATM CE premium", "ATM PE premium"]])
+
+    st.markdown('<div class="nandi-section-label">TECHNICAL CONTEXT</div>', unsafe_allow_html=True)
+    st.subheader("Trend, volatility and momentum indicators")
+    st.caption(
+        "EMA, SMA, Bollinger Bands, MACD and rate of change are calculated from the same five-minute NIFTY spot points. "
+        "They are visible for technical analysis, but they are not silently added to the tested Nandi OI V1 approval rule."
+    )
+    trend, bands = st.columns(2)
+    trend.line_chart(chart[["NIFTY spot", "EMA 9", "EMA 21", "SMA 20"]])
+    bands.line_chart(chart[["NIFTY spot", "Bollinger upper", "Bollinger middle", "Bollinger lower"]])
+    macd, roc = st.columns(2)
+    macd.line_chart(chart[["MACD line", "MACD signal", "MACD histogram"]])
+    roc.bar_chart(chart[["ROC 10 %"]])
+
+    st.markdown('<div class="nandi-section-label">EXACT CALCULATION</div>', unsafe_allow_html=True)
+    st.subheader("Choose one chart point and inspect the full Nandi calculation")
+    selected_timestamp = st.selectbox(
+        "Snapshot time", list(chart.index), index=len(chart.index) - 1,
+        format_func=lambda item: item.strftime("%d %b %Y · %I:%M %p"),
+    )
+    evidence_row = next(row for row in chart_rows if row["Timestamp"] == selected_timestamp)
+    calc, gates = st.columns(2)
+    calc.markdown("**Weighted bullish and bearish score**")
+    calc.dataframe(pd.DataFrame(result.calculation_rows(evidence_row)), use_container_width=True, hide_index=True)
+    gates.markdown("**Approval gates at this exact snapshot**")
+    gates.dataframe(pd.DataFrame(result.approval_rows(evidence_row)), use_container_width=True, hide_index=True)
+    st.caption(
+        f"Final calculation at {selected_timestamp.strftime('%I:%M %p')}: "
+        f"bullish {evidence_row['Nandi bullish score']:.1f}/100 • bearish {evidence_row['Nandi bearish score']:.1f}/100 • "
+        f"action: {evidence_row['Final action']}."
+    )
+
+    st.subheader("Raw OI option-chain rows behind this calculation")
+    st.caption("This is the exact nearest-weekly ATM ±5 option table Nandi used for the selected chart point. OI activity is calculated from change in OI and option-premium change.")
+    st.dataframe(
+        pd.DataFrame(result.option_chain_rows(selected_timestamp.to_pydatetime())),
+        use_container_width=True, hide_index=True,
+    )
+    with st.expander("Where this data came from and how Nandi used it"):
+        st.dataframe(
+            pd.DataFrame(result.data_provenance_rows(selected_timestamp.to_pydatetime(), run)),
+            use_container_width=True, hide_index=True,
+        )
+
+    decisions = chart[chart["Final action"] != "NO TRADE"]
+    if decisions.empty:
+        st.info("No full Nandi OI V1 entry was approved on this day. That is a valid daily result: the five evidence gates did not all align.")
+    else:
+        st.markdown("**Full Nandi OI V1 approved events on this day**")
+        st.dataframe(
+            decisions.reset_index()[[
+                "Timestamp", "Final action", "Nandi bullish score", "Nandi bearish score",
+                "OI bullish score", "OI bearish score", "Price bullish", "Price bearish",
+                "Premium bullish", "Premium bearish", "Persistence bullish", "Persistence bearish",
+            ]],
+            use_container_width=True, hide_index=True,
+        )
+
+    st.subheader("Every strategy tested on this trading day")
+    st.caption("This table keeps the tests comparable while still showing the technical method used by every strategy.")
+    daily_frame = pd.DataFrame(day_rows)
+    st.dataframe(daily_frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download Daily Nandi Strategy Analysis",
+        daily_frame.to_csv(index=False).encode("utf-8"),
+        file_name=f"nandi_daily_strategy_analysis_{selected_day}.csv",
+        mime="text/csv", use_container_width=True,
+    )
+
+
 def unified_backtest_lab() -> None:
     header("Unified Backtest", "Every implemented Nandi strategy • one comparable historical report")
     st.info(
-        "This first tests each OI evidence part separately—OI flow, price structure, OI walls, option premium/liquidity "
-        "and persistence—then tests the final Nandi OI V1 rule and every selected saved RSI setup. "
-        "Each strategy stays separate; Nandi does not invent a combined P&L."
+        "Nandi now keeps every strategy in one daily chart-led report. It tests OI flow, price structure, OI walls, "
+        "option premium/liquidity and persistence, then the final Nandi OI V1 rule and each saved RSI setup. "
+        "The daily view explains the data, indicator and paper-risk rule behind every result."
     )
     st.caption(
         "Historical option data is replayed as five-minute snapshots without future-data access. "
@@ -753,11 +901,16 @@ def unified_backtest_lab() -> None:
 
     result = st.session_state.get("unified_backtest_result")
     if not result:
-        st.write("Run the full replay to compare every OI evidence gate, final OI V1 and every saved RSI setup in one report.")
+        st.write("Run the full replay to inspect every OI evidence gate, final OI V1 and every saved RSI setup by trading day, with the underlying charts and strategy background.")
         return
 
+    daily_strategy_analysis(result)
+
+    st.divider()
+    st.markdown('<div class="nandi-section-label">WHOLE PERIOD COMPARISON</div>', unsafe_allow_html=True)
+
     summary = pd.DataFrame(result.summary_rows())
-    st.subheader("All strategy results")
+    st.subheader("All strategy results across the selected period")
     st.caption(
         "Use this to inspect historical evidence, not to choose a guaranteed winner. "
         "A result with fewer trades has less evidence than a result observed across many trades."

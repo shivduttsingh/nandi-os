@@ -59,3 +59,47 @@ def test_unified_backtest_rejects_empty_strategy_selection():
         assert "at least one" in str(exc)
     else:
         raise AssertionError("Expected an empty strategy selection to be rejected")
+
+
+def test_unified_backtest_keeps_daily_chart_evidence_and_strategy_background():
+    first_day = datetime(2026, 7, 20, 9, 15)
+    second_day = datetime(2026, 7, 21, 9, 15)
+    weekly = [
+        snapshot(first_day + timedelta(minutes=5 * index), 25000 + index * 5, 100 + index)
+        for index in range(16)
+    ] + [
+        snapshot(second_day + timedelta(minutes=5 * index), 25100 - index * 5, 116 + index)
+        for index in range(16)
+    ]
+    monthly = list(weekly)
+    result = UnifiedBacktester().run(
+        weekly, monthly, {"RSI 5 — 30/70": {"length": 5, "lower": 30, "upper": 70}},
+    )
+
+    assert result.available_dates() == (first_day.date(), second_day.date())
+    rows = result.daily_strategy_rows(first_day.date())
+    assert len(rows) == len(result.runs)
+    assert all(row["Historical snapshots"] == 16 for row in rows)
+    assert {row["Strategy"] for row in rows} >= {"OI flow", "Nandi OI V1", "RSI 5 — 30/70"}
+
+    chart_rows = result.daily_chart_rows(first_day.date(), rsi_length=5, rsi_lower=30, rsi_upper=70)
+    assert len(chart_rows) == 16
+    assert {
+        "NIFTY spot", "Nearby CE ΔOI", "CE OI wall", "Nandi bullish score", "RSI(5)",
+        "EMA 9", "Bollinger upper", "MACD line", "ROC 10 %",
+    } <= chart_rows[0].keys()
+    assert result.strategy_run("Nandi OI V1 — Nearest weekly").background.entry_rule.startswith("Score must be at least 80")
+    assert result.strategy_run("RSI 5 — 30/70 — Nearest weekly").background.rsi_length == 5
+
+    selected_timestamp = chart_rows[-1]["Timestamp"]
+    option_chain = result.option_chain_rows(selected_timestamp)
+    assert len(option_chain) == 22
+    assert {"Open interest", "Change in OI", "OI/premium activity", "Spread %"} <= option_chain[0].keys()
+    calculation = result.calculation_rows(chart_rows[-1])
+    assert [row["Calculation"] for row in calculation] == [
+        "OI flow", "NIFTY price structure", "OI-wall movement", "ATM option premium",
+        "Three-snapshot persistence", "Liquidity quality",
+    ]
+    assert result.approval_rows(chart_rows[-1])[-1]["Approval gate"] == "Final paper action"
+    provenance = result.data_provenance_rows(selected_timestamp, result.runs[0])
+    assert any(row["Item"] == "Option data source" for row in provenance)

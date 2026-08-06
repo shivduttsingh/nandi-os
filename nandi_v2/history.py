@@ -47,10 +47,16 @@ class DecisionHistory:
 
     @staticmethod
     def signal_key(decision: Decision, spot: float, expiry: str) -> str:
+        """One entry-alert key per side/strike/expiry/trading day.
+
+        Spot and minute are deliberately excluded. A confirmed setup can remain
+        above 80 for many refreshes without producing repeated email alerts.
+        """
         stamp = decision.data_timestamp or decision.generated_at or datetime.utcnow()
-        bucket = stamp.strftime("%Y%m%d%H%M")
+        trading_day = stamp.strftime("%Y%m%d")
         strike = int(decision.selected_strike or 0)
-        return f"{bucket}:{decision.action.value}:{strike}:{expiry}:{round(spot, 1)}"
+        side = decision.side
+        return f"{trading_day}:{side}:{strike}:{expiry}"
 
     def append(self, decision: Decision, spot: float, expiry: str, signal_key: str | None = None) -> str:
         key = signal_key or self.signal_key(decision, spot, expiry)
@@ -70,7 +76,7 @@ class DecisionHistory:
 
     def alert_exists(self, signal_key: str) -> bool:
         with self._connect() as connection:
-            row = connection.execute("SELECT 1 FROM alerts WHERE signal_key = ?", (signal_key,)).fetchone()
+            row = connection.execute("SELECT 1 FROM alerts WHERE signal_key = ? AND delivered = 1", (signal_key,)).fetchone()
         return row is not None
 
     def record_alert(self, signal_key: str, delivered: bool, error: str = "") -> None:

@@ -19,11 +19,12 @@ class NSEDataError(RuntimeError):
 
 
 class NSEPublicClient:
-    """Conservative public NSE adapter with explicit timestamps and no broker fallback.
+    """Conservative NSE adapter with rolling snapshot deltas and no broker fallback.
 
-    The Streamlit screen may recalculate every second, but callers must rate-limit
-    network access. Production real-time deployment should replace this adapter
-    with an authorised NSE Data feed while preserving these return models.
+    The raw NSE payload contains day-level change values. Nandi stores the prior
+    successful snapshot and replaces ``change`` and ``change_oi`` with movement
+    since that prior snapshot. The first snapshot therefore has zero rolling
+    deltas and cannot independently create a directional trade signal.
     """
 
     BASE_URL = "https://www.nseindia.com"
@@ -42,6 +43,7 @@ class NSEPublicClient:
             "Connection": "keep-alive",
         }
         self._primed = False
+        self._previous_chain: OptionChainSnapshot | None = None
 
     def _request(self, path: str, *, accept_json: bool = True) -> bytes:
         headers = dict(self._headers)
@@ -52,6 +54,8 @@ class NSEPublicClient:
             with self._opener.open(request, timeout=self.timeout_seconds) as response:
                 return response.read()
         except HTTPError as exc:
+            if exc.code in {401, 403}:
+                self._primed = False
             raise NSEDataError(f"NSE returned HTTP {exc.code}") from exc
         except (URLError, TimeoutError) as exc:
             raise NSEDataError(f"NSE request failed: {exc}") from exc
@@ -82,7 +86,7 @@ class NSEPublicClient:
             return 0.0
 
     @staticmethod
-    def _timestamp(value: Any) -> tuple[datetime, str]:
+    def _timestamp(value: Any, *, required: bool = True) -> tuple[datetime, str]:
         raw = str(value or "").strip()
         patterns = ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
         for pattern in patterns:
@@ -90,6 +94,8 @@ class NSEPublicClient:
                 return datetime.strptime(raw, pattern).replace(tzinfo=IST), raw
             except ValueError:
                 continue
+        if required:
+            raise NSEDataError(f"NSE timestamp is missing or invalid: {raw or 'blank'}")
         return datetime.now(IST), raw
 
     @classmethod
@@ -104,9 +110,60 @@ class NSEPublicClient:
             iv=cls._number(data.get("impliedVolatility")),
         )
 
-    def fetch_option_chain(self, symbol: str = "NIFTY", expiry: str | None = None) -> OptionChainSnapshot:
-        symbol = symbol.strip().upper() or "NIFTY"
-        payload = self._json(self.OPTION_CHAIN_API.format(symbol=quote(symbol)))
+    @staticmethod
+    def _rolling_leg(current: OptionLeg, previous: OptionLeg | None) -> OptionLeg:
+        if previous is None:
+            return OptionLeg(current.ltp, 0.0, current.oi, 0.0, current.volume, current.iv)
+        return OptionLeg(
+            ltp=current.ltp,
+            change=current.ltp - previous.ltp,
+            oi=current.oi,
+            change_oi=current.oi - previous.oi,
+            volume=max(0.0, current.volume - previous.volume),
+            iv=current.iv,
+        )
+
+    @classmethod
+    def rolling_snapshot(
+        cls,
+        current: OptionChainSnapshot,
+        previous: OptionChainSnapshot | None,
+    ) -> OptionChainSnapshot:
+        """Convert cumulative NSE fields into changes between two snapshots."""
+        if previous is None or previous.expiry != current.expiry:
+            rows = tuple(
+                StrikeRow(row.strike, cls._rolling_leg(row.ce, None), cls._rolling_leg(row.pe, None))
+                for row in current.rows
+            )
+            return OptionChainSnapshot(
+                current.timestamp,
+                current.expiry,
+                current.spot,
+                rows,
+                source=f"{current.source} · rolling baseline",
+                raw_timestamp=current.raw_timestamp,
+            )
+        previous_rows = {row.strike: row for row in previous.rows}
+        rows = []
+        for row in current.rows:
+            old = previous_rows.get(row.strike)
+            rows.append(
+                StrikeRow(
+                    row.strike,
+                    cls._rolling_leg(row.ce, old.ce if old else None),
+                    cls._rolling_leg(row.pe, old.pe if old else None),
+                )
+            )
+        return OptionChainSnapshot(
+            current.timestamp,
+            current.expiry,
+            current.spot,
+            tuple(rows),
+            source=f"{current.source} · rolling delta",
+            raw_timestamp=current.raw_timestamp,
+        )
+
+    def _parse_option_chain(self, payload: dict[str, Any], expiry: str | None = None) -> OptionChainSnapshot:
         records = payload.get("records")
         if not isinstance(records, dict):
             raise NSEDataError("NSE option-chain records are missing")
@@ -129,14 +186,31 @@ class NSEPublicClient:
             rows.append(StrikeRow(strike=strike, ce=self._leg(item.get("CE")), pe=self._leg(item.get("PE"))))
         if not rows:
             raise NSEDataError(f"No NIFTY option rows were returned for expiry {selected_expiry or 'nearest'}")
-        timestamp, raw_timestamp = self._timestamp(records.get("timestamp"))
+        timestamp, raw_timestamp = self._timestamp(records.get("timestamp"), required=True)
         spot = self._number(records.get("underlyingValue"))
         if spot <= 0:
             filtered = payload.get("filtered")
             spot = self._number(filtered.get("underlyingValue")) if isinstance(filtered, dict) else 0.0
         if spot <= 0:
             raise NSEDataError("NSE option chain did not include the NIFTY underlying value")
-        return OptionChainSnapshot(timestamp=timestamp, expiry=selected_expiry, spot=spot, rows=tuple(sorted(rows, key=lambda row: row.strike)), source="NSE public option chain", raw_timestamp=raw_timestamp)
+        return OptionChainSnapshot(
+            timestamp=timestamp,
+            expiry=selected_expiry,
+            spot=spot,
+            rows=tuple(sorted(rows, key=lambda row: row.strike)),
+            source="NSE public option chain",
+            raw_timestamp=raw_timestamp,
+        )
+
+    def fetch_option_chain(self, symbol: str = "NIFTY", expiry: str | None = None) -> OptionChainSnapshot:
+        symbol = symbol.strip().upper() or "NIFTY"
+        payload = self._json(self.OPTION_CHAIN_API.format(symbol=quote(symbol)))
+        raw_snapshot = self._parse_option_chain(payload, expiry)
+        if self._previous_chain and raw_snapshot.timestamp <= self._previous_chain.timestamp:
+            raise NSEDataError("NSE option-chain timestamp did not advance")
+        rolling = self.rolling_snapshot(raw_snapshot, self._previous_chain)
+        self._previous_chain = raw_snapshot
+        return rolling
 
     def fetch_nifty_spot(self) -> tuple[float, datetime]:
         payload = self._json(self.ALL_INDICES_API)
@@ -151,31 +225,11 @@ class NSEPublicClient:
                 value = self._number(item.get("last") or item.get("lastPrice"))
                 if value <= 0:
                     continue
-                stamp, _ = self._timestamp(item.get("timeVal") or payload.get("timestamp"))
+                stamp, _ = self._timestamp(item.get("timeVal") or payload.get("timestamp"), required=False)
                 return value, stamp
         raise NSEDataError("NIFTY 50 was not found in the NSE indices response")
 
 
 def parse_option_chain_payload(payload: dict[str, Any], expiry: str | None = None) -> OptionChainSnapshot:
     """Pure parser used by tests and replay tools without making a network request."""
-    client = NSEPublicClient()
-    records = payload.get("records")
-    if not isinstance(records, dict):
-        raise NSEDataError("NSE option-chain records are missing")
-    expiries = records.get("expiryDates")
-    available = [str(value) for value in expiries] if isinstance(expiries, list) else []
-    selected = expiry or (available[0] if available else "")
-    rows = []
-    data = records.get("data")
-    if not isinstance(data, list):
-        raise NSEDataError("NSE option-chain rows are missing")
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        if selected and str(item.get("expiryDate") or "") != selected:
-            continue
-        strike = client._number(item.get("strikePrice"))
-        if strike:
-            rows.append(StrikeRow(strike, client._leg(item.get("CE")), client._leg(item.get("PE"))))
-    timestamp, raw = client._timestamp(records.get("timestamp"))
-    return OptionChainSnapshot(timestamp=timestamp, expiry=selected, spot=client._number(records.get("underlyingValue")), rows=tuple(sorted(rows, key=lambda row: row.strike)), source="NSE payload", raw_timestamp=raw)
+    return NSEPublicClient()._parse_option_chain(payload, expiry)

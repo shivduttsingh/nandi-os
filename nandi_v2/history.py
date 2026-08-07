@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from .lifecycle import TradeState, TradeStatus
-from .models import Decision
+from .models import Decision, MarketContext, OptionChainSnapshot, OptionLeg, StrikeRow
 
 
 class DecisionHistory:
-    """Persistent Nandi V2 decision, alert and trade-lifecycle journal."""
+    """Persistent Nandi V2 decision, alert, lifecycle and replay journal."""
 
     def __init__(self, path: str = "data/nandi_v2.sqlite") -> None:
         self.path = path
@@ -61,11 +61,22 @@ class DecisionHistory:
                     payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_trade_events_event_at ON trade_events(event_at DESC);
+
+                CREATE TABLE IF NOT EXISTS market_frames (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    frame_key TEXT NOT NULL UNIQUE,
+                    observed_at TEXT NOT NULL,
+                    data_timestamp TEXT NOT NULL,
+                    expiry TEXT,
+                    spot REAL NOT NULL,
+                    snapshot_payload TEXT NOT NULL,
+                    context_payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_market_frames_observed_at ON market_frames(observed_at ASC);
             """)
 
     @staticmethod
     def signal_key(decision: Decision, spot: float, expiry: str) -> str:
-        """One successful entry-alert key per side/strike/expiry/trading day."""
         stamp = decision.data_timestamp or decision.generated_at or datetime.utcnow()
         trading_day = stamp.strftime("%Y%m%d")
         strike = int(decision.selected_strike or 0)
@@ -77,11 +88,9 @@ class DecisionHistory:
         generated = decision.generated_at or datetime.utcnow()
         with self._connect() as connection:
             connection.execute(
-                """
-                INSERT INTO decisions
+                """INSERT INTO decisions
                 (signal_key, generated_at, data_timestamp, action, score, ce_score, pe_score, spot, expiry, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     key,
                     generated.isoformat(),
@@ -104,23 +113,13 @@ class DecisionHistory:
                 (max(1, int(limit)),),
             ).fetchall()
         return [
-            {
-                "Time": row["generated_at"],
-                "Decision": row["action"],
-                "Score": row["score"],
-                "CE": row["ce_score"],
-                "PE": row["pe_score"],
-                "Spot": row["spot"],
-                "Expiry": row["expiry"],
-            }
-            for row in rows
+            {"Time": r["generated_at"], "Decision": r["action"], "Score": r["score"], "CE": r["ce_score"], "PE": r["pe_score"], "Spot": r["spot"], "Expiry": r["expiry"]}
+            for r in rows
         ]
 
     def alert_exists(self, signal_key: str) -> bool:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM alerts WHERE signal_key = ? AND delivered = 1", (signal_key,)
-            ).fetchone()
+            row = connection.execute("SELECT 1 FROM alerts WHERE signal_key = ? AND delivered = 1", (signal_key,)).fetchone()
         return row is not None
 
     def record_alert(self, signal_key: str, delivered: bool, error: str = "") -> None:
@@ -129,6 +128,15 @@ class DecisionHistory:
                 "INSERT OR REPLACE INTO alerts(signal_key, sent_at, delivered, error) VALUES (?, ?, ?, ?)",
                 (signal_key, datetime.utcnow().isoformat(), int(delivered), error),
             )
+
+    @staticmethod
+    def _dt(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
 
     @staticmethod
     def _trade_payload(state: TradeState) -> dict[str, Any]:
@@ -147,15 +155,6 @@ class DecisionHistory:
             "reason": state.reason,
         }
 
-    @staticmethod
-    def _parse_datetime(value: Any) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
-
     @classmethod
     def _state_from_payload(cls, payload: dict[str, Any]) -> TradeState:
         try:
@@ -170,8 +169,8 @@ class DecisionHistory:
             target_1=payload.get("target_1"),
             target_2=payload.get("target_2"),
             selected_strike=payload.get("selected_strike"),
-            opened_at=cls._parse_datetime(payload.get("opened_at")),
-            updated_at=cls._parse_datetime(payload.get("updated_at")),
+            opened_at=cls._dt(payload.get("opened_at")),
+            updated_at=cls._dt(payload.get("updated_at")),
             partial_booked=bool(payload.get("partial_booked", False)),
             peak_favourable_spot=payload.get("peak_favourable_spot"),
             reason=str(payload.get("reason") or ""),
@@ -180,57 +179,25 @@ class DecisionHistory:
     @staticmethod
     def trade_event_key(state: TradeState, decision: Decision | None = None) -> str:
         stamp = state.updated_at or state.opened_at or datetime.utcnow()
-        decision_stamp = ""
-        if decision is not None and decision.data_timestamp is not None:
-            decision_stamp = decision.data_timestamp.isoformat()
-        return ":".join(
-            [
-                stamp.isoformat(),
-                state.status.value,
-                state.side,
-                str(int(state.selected_strike or 0)),
-                decision_stamp,
-            ]
-        )
+        decision_stamp = decision.data_timestamp.isoformat() if decision and decision.data_timestamp else ""
+        return ":".join([stamp.isoformat(), state.status.value, state.side, str(int(state.selected_strike or 0)), decision_stamp])
 
-    def append_trade_event(
-        self,
-        state: TradeState,
-        *,
-        spot: float | None = None,
-        decision: Decision | None = None,
-    ) -> bool:
-        """Persist a lifecycle transition once. Returns True if a new row was inserted."""
+    def append_trade_event(self, state: TradeState, *, spot: float | None = None, decision: Decision | None = None) -> bool:
         key = self.trade_event_key(state, decision)
         payload = json.dumps(self._trade_payload(state), separators=(",", ":"))
         event_at = state.updated_at or state.opened_at or datetime.utcnow()
         with self._connect() as connection:
             cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO trade_events
+                """INSERT OR IGNORE INTO trade_events
                 (event_key, event_at, status, side, spot, score, selected_strike, reason, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    key,
-                    event_at.isoformat(),
-                    state.status.value,
-                    state.side,
-                    spot,
-                    decision.score if decision is not None else None,
-                    state.selected_strike,
-                    state.reason,
-                    payload,
-                ),
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (key, event_at.isoformat(), state.status.value, state.side, spot, decision.score if decision else None, state.selected_strike, state.reason, payload),
             )
         return cursor.rowcount > 0
 
     def latest_trade_state(self) -> TradeState:
-        """Restore the last lifecycle state after an app restart."""
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT payload FROM trade_events ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+            row = connection.execute("SELECT payload FROM trade_events ORDER BY id DESC LIMIT 1").fetchone()
         if row is None:
             return TradeState()
         try:
@@ -242,27 +209,115 @@ class DecisionHistory:
     def recent_trade_events(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT event_at, status, side, spot, score, selected_strike, reason
-                FROM trade_events ORDER BY id DESC LIMIT ?
-                """,
+                "SELECT event_at, status, side, spot, score, selected_strike, reason FROM trade_events ORDER BY id DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
         return [
-            {
-                "Time": row["event_at"],
-                "Status": row["status"],
-                "Side": row["side"],
-                "Spot": row["spot"],
-                "Score": row["score"],
-                "Strike": row["selected_strike"],
-                "Reason": row["reason"],
-            }
-            for row in rows
+            {"Time": r["event_at"], "Status": r["status"], "Side": r["side"], "Spot": r["spot"], "Score": r["score"], "Strike": r["selected_strike"], "Reason": r["reason"]}
+            for r in rows
         ]
+
+    @staticmethod
+    def _leg_payload(leg: OptionLeg) -> dict[str, float]:
+        return {"ltp": leg.ltp, "change": leg.change, "oi": leg.oi, "change_oi": leg.change_oi, "volume": leg.volume, "iv": leg.iv}
+
+    @classmethod
+    def _snapshot_payload(cls, snapshot: OptionChainSnapshot) -> dict[str, Any]:
+        return {
+            "timestamp": snapshot.timestamp.isoformat(),
+            "expiry": snapshot.expiry,
+            "spot": snapshot.spot,
+            "source": snapshot.source,
+            "raw_timestamp": snapshot.raw_timestamp,
+            "rows": [{"strike": row.strike, "ce": cls._leg_payload(row.ce), "pe": cls._leg_payload(row.pe)} for row in snapshot.rows],
+        }
+
+    @staticmethod
+    def _context_payload(context: MarketContext) -> dict[str, Any]:
+        return {
+            "observed_at": context.observed_at.isoformat(),
+            "previous_spot": context.previous_spot,
+            "recent_high": context.recent_high,
+            "recent_low": context.recent_low,
+            "momentum_rsi": context.momentum_rsi,
+            "spot_volume_ratio": context.spot_volume_ratio,
+        }
+
+    @staticmethod
+    def _leg_from_payload(value: dict[str, Any]) -> OptionLeg:
+        return OptionLeg(
+            ltp=float(value.get("ltp") or 0.0), change=float(value.get("change") or 0.0),
+            oi=float(value.get("oi") or 0.0), change_oi=float(value.get("change_oi") or 0.0),
+            volume=float(value.get("volume") or 0.0), iv=float(value.get("iv") or 0.0),
+        )
+
+    @classmethod
+    def _snapshot_from_payload(cls, value: dict[str, Any]) -> OptionChainSnapshot:
+        rows = tuple(
+            StrikeRow(float(row.get("strike") or 0.0), cls._leg_from_payload(row.get("ce") or {}), cls._leg_from_payload(row.get("pe") or {}))
+            for row in value.get("rows", []) if isinstance(row, dict)
+        )
+        return OptionChainSnapshot(
+            timestamp=datetime.fromisoformat(str(value["timestamp"])), expiry=str(value.get("expiry") or ""),
+            spot=float(value.get("spot") or 0.0), rows=rows, source=str(value.get("source") or "NSE"), raw_timestamp=str(value.get("raw_timestamp") or ""),
+        )
+
+    @classmethod
+    def _context_from_payload(cls, value: dict[str, Any]) -> MarketContext:
+        return MarketContext(
+            observed_at=datetime.fromisoformat(str(value["observed_at"])), previous_spot=value.get("previous_spot"),
+            recent_high=value.get("recent_high"), recent_low=value.get("recent_low"), momentum_rsi=value.get("momentum_rsi"),
+            spot_volume_ratio=value.get("spot_volume_ratio"),
+        )
+
+    def append_market_frame(self, snapshot: OptionChainSnapshot, context: MarketContext) -> bool:
+        key = f"{snapshot.timestamp.isoformat()}:{snapshot.expiry}"
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO market_frames
+                (frame_key, observed_at, data_timestamp, expiry, spot, snapshot_payload, context_payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    key, context.observed_at.isoformat(), snapshot.timestamp.isoformat(), snapshot.expiry, snapshot.spot,
+                    json.dumps(self._snapshot_payload(snapshot), separators=(",", ":")),
+                    json.dumps(self._context_payload(context), separators=(",", ":")),
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def replay_data(self, trading_day: str | None = None, limit: int = 2000) -> tuple[list[OptionChainSnapshot], list[MarketContext]]:
+        query = "SELECT snapshot_payload, context_payload FROM market_frames"
+        args: list[Any] = []
+        if trading_day:
+            query += " WHERE substr(observed_at, 1, 10) = ?"
+            args.append(trading_day)
+        query += " ORDER BY observed_at ASC LIMIT ?"
+        args.append(max(1, int(limit)))
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(args)).fetchall()
+        snapshots: list[OptionChainSnapshot] = []
+        contexts: list[MarketContext] = []
+        for row in rows:
+            try:
+                sp = json.loads(row["snapshot_payload"])
+                cp = json.loads(row["context_payload"])
+                snapshots.append(self._snapshot_from_payload(sp))
+                contexts.append(self._context_from_payload(cp))
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+        return snapshots, contexts
+
+    def replay_days(self, limit: int = 60) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT substr(observed_at,1,10) AS day FROM market_frames ORDER BY day DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [str(row["day"]) for row in rows if row["day"]]
 
     def clear(self) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM decisions")
             connection.execute("DELETE FROM alerts")
             connection.execute("DELETE FROM trade_events")
+            connection.execute("DELETE FROM market_frames")

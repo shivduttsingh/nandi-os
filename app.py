@@ -19,6 +19,7 @@ from nandi_v2.history import DecisionHistory
 from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
 from nandi_v2.nse import NSEDataError, NSEPublicClient
+from nandi_v2.replay import NandiReplay
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -33,8 +34,7 @@ st.markdown(
     .hero{display:flex;justify-content:space-between;gap:1rem;border:1px solid var(--line);border-radius:18px;padding:1.3rem 1.5rem;margin-bottom:1.2rem;background:linear-gradient(112deg,#fff 55%,#eef8f2 100%);position:relative;overflow:hidden}.hero:before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--g)}
     .eyebrow{color:var(--g);font-size:.7rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.title{color:var(--ink);font-size:1.85rem;font-weight:800;margin:.15rem 0}.copy{color:var(--muted);max-width:850px;font-size:.92rem}.badge{border:1px solid #b9ddc8;color:var(--gd);background:#fff;border-radius:999px;padding:.42rem .72rem;font-size:.7rem;font-weight:800;white-space:nowrap}
     .decision{border:1px solid var(--line);border-radius:18px;background:#fff;padding:1.1rem 1.2rem;min-height:445px}.label{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.11em;text-transform:uppercase}.value{font-size:2rem;font-weight:850;letter-spacing:-.04em;margin:.2rem 0}.buy{color:var(--gd)}.wait{color:var(--amber)}.no{color:var(--red)}
-    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin-top:.8rem}.cell{border:1px solid var(--line);border-radius:12px;padding:.65rem}.cell b{display:block;margin-top:.12rem}.reason{border-left:3px solid var(--g);padding:.35rem .6rem;margin:.34rem 0;background:var(--gs);border-radius:0 8px 8px 0}.blocker{border-left:3px solid var(--red);padding:.35rem .6rem;margin:.34rem 0;background:#fbf1f1;border-radius:0 8px 8px 0}.note{color:var(--muted);font-size:.76rem;line-height:1.45}
-    .trade{border:1px solid var(--line);border-radius:14px;padding:.85rem 1rem;background:#fff;margin-top:.8rem}.stButton>button[kind="primary"]{background:var(--g);border-color:var(--g)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin-top:.8rem}.cell{border:1px solid var(--line);border-radius:12px;padding:.65rem}.cell b{display:block;margin-top:.12rem}.reason{border-left:3px solid var(--g);padding:.35rem .6rem;margin:.34rem 0;background:var(--gs);border-radius:0 8px 8px 0}.blocker{border-left:3px solid var(--red);padding:.35rem .6rem;margin:.34rem 0;background:#fbf1f1;border-radius:0 8px 8px 0}.note{color:var(--muted);font-size:.76rem;line-height:1.45}.trade{border:1px solid var(--line);border-radius:14px;padding:.85rem 1rem;background:#fff;margin-top:.8rem}.stButton>button[kind="primary"]{background:var(--g);border-color:var(--g)}
     @media(max-width:800px){.badge{display:none}.grid{grid-template-columns:1fr}.value{font-size:1.65rem}}
     </style>
     """,
@@ -85,7 +85,28 @@ def history_store() -> DecisionHistory:
     return DecisionHistory()
 
 
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def restore_trade_state() -> TradeState:
+    state = history_store().latest_trade_state()
+    if state.active and state.opened_at is not None:
+        opened = state.opened_at.astimezone(IST) if state.opened_at.tzinfo else state.opened_at.replace(tzinfo=IST)
+        if opened.date() != now_ist().date():
+            return TradeState(status=TradeStatus.FLAT, updated_at=now_ist(), reason="Previous-session trade state expired on restart.")
+    return state
+
+
+def trade_fingerprint(state: TradeState) -> tuple[Any, ...]:
+    return (
+        state.status.value, state.side, state.entry_spot, state.stop_spot, state.target_1,
+        state.target_2, state.selected_strike, state.partial_booked,
+    )
+
+
 def init_state() -> None:
+    restored = restore_trade_state()
     defaults: dict[str, Any] = {
         "logged_in": False,
         "latest_oi_snapshot": None,
@@ -108,7 +129,8 @@ def init_state() -> None:
         "oi_refresh_seconds": 60,
         "spot_refresh_seconds": 5,
         "confirmation_evaluations": 3,
-        "trade_state": TradeState(),
+        "trade_state": restored,
+        "trade_fingerprint": trade_fingerprint(restored),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -116,10 +138,6 @@ def init_state() -> None:
 
 
 init_state()
-
-
-def now_ist() -> datetime:
-    return datetime.now(IST)
 
 
 def seconds_since(value: datetime | None, now: datetime) -> float:
@@ -183,8 +201,7 @@ def momentum_rsi(points: list[tuple[str, float]], period: int = 14) -> float | N
     losses = sum(max(-change, 0.0) for change in changes) / period
     if losses == 0:
         return 100.0 if gains > 0 else 50.0
-    rs = gains / losses
-    return 100.0 - 100.0 / (1.0 + rs)
+    return 100.0 - 100.0 / (1.0 + gains / losses)
 
 
 def market_context(now: datetime) -> MarketContext:
@@ -263,13 +280,19 @@ def record_and_alert(decision: Decision, snapshot: OptionChainSnapshot) -> None:
         st.session_state.last_history_signature = signature
     else:
         signal_key = history_store().signal_key(decision, snapshot.spot, snapshot.expiry)
-    if not is_entry_alert(decision, float(st.session_state.email_threshold)):
-        return
-    if history_store().alert_exists(signal_key):
+    if not is_entry_alert(decision, float(st.session_state.email_threshold)) or history_store().alert_exists(signal_key):
         return
     delivery = SMTPEmailAlertSink(smtp_settings()).send_decision(decision, snapshot.spot, snapshot.expiry)
     history_store().record_alert(signal_key, delivery.delivered, delivery.error)
     st.session_state.last_email_status = "Email alert delivered" if delivery.delivered else delivery.error
+
+
+def persist_trade_state(previous: TradeState, current: TradeState, decision: Decision, spot: float) -> None:
+    old = trade_fingerprint(previous)
+    new = trade_fingerprint(current)
+    st.session_state.trade_fingerprint = new
+    if new != old:
+        history_store().append_trade_event(current, spot=spot, decision=decision)
 
 
 def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Decision | None, Any]:
@@ -280,23 +303,36 @@ def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Deci
     if oi_snapshot is None or spot is None:
         return None, None, gate
     snapshot = replace(oi_snapshot, spot=float(spot))
-    raw = decide(snapshot, market_context(now), trade_threshold=float(st.session_state.trade_threshold), prepare_threshold=max(60.0, float(st.session_state.trade_threshold) - 10.0))
+    context = market_context(now)
+    history_store().append_market_frame(snapshot, context)
+    raw = decide(
+        snapshot,
+        context,
+        trade_threshold=float(st.session_state.trade_threshold),
+        prepare_threshold=max(60.0, float(st.session_state.trade_threshold) - 10.0),
+    )
+    previous_trade = st.session_state.trade_state
     if gate.allowed:
         confirmed = confirm_decision(raw)
-        st.session_state.trade_state = advance_trade_state(st.session_state.trade_state, confirmed, snapshot.spot, now)
+        current_trade = advance_trade_state(previous_trade, confirmed, snapshot.spot, now)
     else:
         st.session_state.candidate_side = ""
         st.session_state.candidate_count = 0
+        st.session_state.candidate_snapshot_timestamp = ""
         confirmed = replace(raw, action=DecisionAction.NO_TRADE, blockers=tuple(dict.fromkeys((gate.reason,) + raw.blockers)))
-        if st.session_state.trade_state.active:
-            st.session_state.trade_state = replace(st.session_state.trade_state, status=TradeStatus.EXIT, updated_at=now, reason="NSE regular session is closed.")
+        if previous_trade.active:
+            current_trade = replace(previous_trade, status=TradeStatus.EXIT, updated_at=now, reason="NSE regular session is closed.")
+        else:
+            current_trade = previous_trade
+    st.session_state.trade_state = current_trade
+    persist_trade_state(previous_trade, current_trade, confirmed, snapshot.spot)
     st.session_state.latest_raw_decision = raw
     st.session_state.latest_confirmed_decision = confirmed
     record_and_alert(confirmed, snapshot)
     return snapshot, confirmed, gate
 
 
-def cls(action: DecisionAction) -> str:
+def action_class(action: DecisionAction) -> str:
     if action in {DecisionAction.BUY_CE, DecisionAction.BUY_PE}:
         return "buy"
     if action in {DecisionAction.PREPARE_CE, DecisionAction.PREPARE_PE}:
@@ -313,7 +349,7 @@ def decision_card(decision: Decision, snapshot: OptionChainSnapshot, gate: Any) 
     blockers = "".join(f'<div class="blocker">{escape(blocker)}</div>' for blocker in decision.blockers)
     levels = decision.levels
     trade: TradeState = st.session_state.trade_state
-    return f'''<div class="decision"><div class="label">Final decision</div><div class="value {cls(decision.action)}">{escape(decision.action.value)}</div><div class="note">Score {decision.score:.1f}/100 · {escape(decision.market_state)} · {escape(gate.status.label)}</div><div class="grid"><div class="cell"><span class="label">CE score</span><b>{decision.ce_score:.1f}</b></div><div class="cell"><span class="label">PE score</span><b>{decision.pe_score:.1f}</b></div><div class="cell"><span class="label">Strike</span><b>{fmt(decision.selected_strike)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(snapshot.expiry)}</b></div><div class="cell"><span class="label">Entry</span><b>{fmt(levels.entry)}</b></div><div class="cell"><span class="label">Stop</span><b>{fmt(levels.stop)}</b></div><div class="cell"><span class="label">Target 1</span><b>{fmt(levels.target_1)}</b></div><div class="cell"><span class="label">Target 2</span><b>{fmt(levels.target_2)}</b></div></div><div style="margin-top:.8rem">{reasons}{blockers}</div><div class="trade"><span class="label">Trade lifecycle</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.7rem">NSE OI timestamp: {snapshot.timestamp.astimezone(IST).strftime('%I:%M:%S %p')} IST · TradingView is chart display only.</div></div>'''
+    return f'''<div class="decision"><div class="label">Final decision</div><div class="value {action_class(decision.action)}">{escape(decision.action.value)}</div><div class="note">Score {decision.score:.1f}/100 · {escape(decision.market_state)} · {escape(gate.status.label)}</div><div class="grid"><div class="cell"><span class="label">CE score</span><b>{decision.ce_score:.1f}</b></div><div class="cell"><span class="label">PE score</span><b>{decision.pe_score:.1f}</b></div><div class="cell"><span class="label">Strike</span><b>{fmt(decision.selected_strike)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(snapshot.expiry)}</b></div><div class="cell"><span class="label">Entry</span><b>{fmt(levels.entry)}</b></div><div class="cell"><span class="label">Stop</span><b>{fmt(levels.stop)}</b></div><div class="cell"><span class="label">Target 1</span><b>{fmt(levels.target_1)}</b></div><div class="cell"><span class="label">Target 2</span><b>{fmt(levels.target_2)}</b></div></div><div style="margin-top:.8rem">{reasons}{blockers}</div><div class="trade"><span class="label">Trade lifecycle</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div><div class="note">Lifecycle state is persisted across app restarts.</div></div><div class="note" style="margin-top:.7rem">NSE OI timestamp: {snapshot.timestamp.astimezone(IST).strftime('%I:%M:%S %p')} IST · TradingView is chart display only.</div></div>'''
 
 
 @st.fragment(run_every="1s")
@@ -392,14 +428,67 @@ def live_page() -> None:
 
 
 def history_page() -> None:
-    header("Decision History", "Stored Nandi V2 decisions for review and replay preparation.")
-    rows = history_store().recent(500)
-    if not rows:
-        st.info("No V2 decisions stored yet.")
+    header("History", "Persistent decisions and trade-lifecycle transitions for audit and review.")
+    decision_rows = history_store().recent(500)
+    trade_rows = history_store().recent_trade_events(500)
+    decisions_tab, trades_tab = st.tabs(["Decisions", "Trade lifecycle"])
+    with decisions_tab:
+        if not decision_rows:
+            st.info("No V2 decisions stored yet.")
+        else:
+            frame = pd.DataFrame(decision_rows)
+            st.dataframe(frame, use_container_width=True, hide_index=True, height=570)
+            st.download_button("Download decision history CSV", frame.to_csv(index=False).encode("utf-8"), file_name="nandi_v2_decision_history.csv", mime="text/csv")
+    with trades_tab:
+        if not trade_rows:
+            st.info("No trade lifecycle transitions stored yet.")
+        else:
+            frame = pd.DataFrame(trade_rows)
+            st.dataframe(frame, use_container_width=True, hide_index=True, height=570)
+            st.download_button("Download trade lifecycle CSV", frame.to_csv(index=False).encode("utf-8"), file_name="nandi_v2_trade_lifecycle.csv", mime="text/csv")
+
+
+def replay_page() -> None:
+    header("Replay", "Re-run the unified V2 engine on NSE snapshots that Nandi has already captured and stored.")
+    days = history_store().replay_days()
+    if not days:
+        st.info("Replay data will appear after Nandi captures live NSE option-chain frames. No historical data are invented or substituted.")
         return
-    frame = pd.DataFrame(rows)
-    st.dataframe(frame, use_container_width=True, hide_index=True, height=620)
-    st.download_button("Download decision history CSV", frame.to_csv(index=False).encode("utf-8"), file_name="nandi_v2_decision_history.csv", mime="text/csv")
+    selected_day = st.selectbox("Trading day", days)
+    snapshots, contexts = history_store().replay_data(selected_day)
+    if len(snapshots) < 2:
+        st.warning("At least two stored frames are required for replay.")
+        return
+    result = NandiReplay(
+        trade_threshold=float(st.session_state.trade_threshold),
+        prepare_threshold=max(60.0, float(st.session_state.trade_threshold) - 10.0),
+    ).run(snapshots, contexts)
+    metrics = st.columns(5)
+    metrics[0].metric("Frames", len(result.frames))
+    metrics[1].metric("Entries", result.entries)
+    metrics[2].metric("CE entries", result.ce_entries)
+    metrics[3].metric("PE entries", result.pe_entries)
+    metrics[4].metric("Exits", result.exits)
+    rows = [
+        {
+            "Time": frame.snapshot.timestamp.isoformat(),
+            "Spot": frame.snapshot.spot,
+            "Decision": frame.decision.action.value,
+            "Score": frame.decision.score,
+            "CE": frame.decision.ce_score,
+            "PE": frame.decision.pe_score,
+            "Trade status": frame.trade_state.status.value,
+            "Reason": frame.trade_state.reason,
+        }
+        for frame in result.frames
+    ]
+    replay_frame = pd.DataFrame(rows)
+    replay_frame["Time"] = pd.to_datetime(replay_frame["Time"])
+    st.line_chart(replay_frame.set_index("Time")[["Spot"]])
+    st.line_chart(replay_frame.set_index("Time")[["CE", "PE", "Score"]])
+    st.dataframe(replay_frame, use_container_width=True, hide_index=True, height=520)
+    st.download_button("Download replay CSV", replay_frame.to_csv(index=False).encode("utf-8"), file_name=f"nandi_v2_replay_{selected_day}.csv", mime="text/csv")
+    st.caption("Replay is deterministic research evidence. It does not place orders and does not claim the setup score is a probability of profit.")
 
 
 def settings_page() -> None:
@@ -424,7 +513,7 @@ def settings_page() -> None:
 def sidebar() -> str:
     st.sidebar.markdown("## Nandi")
     st.sidebar.caption("Unified NIFTY decision engine")
-    page = st.sidebar.radio("Navigation", ["Live Decision", "Evidence", "Decision History", "Settings"], label_visibility="collapsed")
+    page = st.sidebar.radio("Navigation", ["Live Decision", "Evidence", "History", "Replay", "Settings"], label_visibility="collapsed")
     st.sidebar.divider()
     gate = gate_live_signals(now_ist(), market_schedule())
     st.sidebar.caption(f"NSE: {gate.status.label}")
@@ -445,7 +534,9 @@ if page == "Live Decision":
 elif page == "Evidence":
     header("Evidence", "Current score components, limited OI table and source-freshness status.")
     evidence_fragment()
-elif page == "Decision History":
+elif page == "History":
     history_page()
+elif page == "Replay":
+    replay_page()
 else:
     settings_page()

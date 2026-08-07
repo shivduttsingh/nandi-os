@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from nandi_v2.models import MarketContext, OptionChainSnapshot, OptionLeg, StrikeRow
+from nandi_v2.models import DecisionAction, MarketContext, OptionChainSnapshot, OptionLeg, StrikeRow
 from nandi_v2.replay import NandiReplay
 
 
@@ -27,7 +27,7 @@ def _frame(now: datetime, spot: float, bullish: bool) -> tuple[OptionChainSnapsh
 def test_replay_requires_equal_lengths() -> None:
     replay = NandiReplay()
     now = datetime.now(timezone.utc)
-    snapshot, context = _frame(now, 24660.0, True)
+    snapshot, _ = _frame(now, 24660.0, True)
     try:
         replay.run([snapshot], [])
     except ValueError as exc:
@@ -62,3 +62,23 @@ def test_replay_returns_frames_and_summary_counts() -> None:
     assert result.entries >= 0
     assert result.exits >= 0
     assert result.no_trade_frames >= 0
+
+
+def test_replay_requires_fresh_snapshot_confirmation_before_buy() -> None:
+    replay = NandiReplay(trade_threshold=70.0, prepare_threshold=60.0, confirmation_snapshots=3)
+    now = datetime.now(timezone.utc)
+    pairs = [
+        _frame(now, 24660.0, True),
+        _frame(now + timedelta(minutes=1), 24680.0, True),
+        _frame(now + timedelta(minutes=2), 24710.0, True),
+    ]
+    result = replay.run([p[0] for p in pairs], [p[1] for p in pairs])
+    actions = [frame.decision.action for frame in result.frames]
+
+    # If the underlying engine reaches BUY on these synthetic bullish frames,
+    # replay must hold the first two as PREPARE before allowing the third BUY.
+    buy_positions = [i for i, action in enumerate(actions) if action == DecisionAction.BUY_CE]
+    if buy_positions:
+        first_buy = buy_positions[0]
+        assert first_buy >= 2
+        assert actions[first_buy - 1] in {DecisionAction.PREPARE_CE, DecisionAction.NO_TRADE}

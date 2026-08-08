@@ -32,6 +32,7 @@ class WorkerConfig:
     email_threshold: float = 80.0
     confirmation_snapshots: int = 2
     db_path: str = "data/nandi_v2.sqlite"
+    holidays: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -47,6 +48,9 @@ class WorkerConfig:
             except ValueError:
                 return default
 
+        holidays = frozenset(
+            item.strip() for item in os.getenv("NANDI_NSE_HOLIDAYS", "").split(",") if item.strip()
+        )
         return cls(
             oi_refresh_seconds=max(15, _int("NANDI_OI_REFRESH_SECONDS", 30)),
             spot_refresh_seconds=max(2, _int("NANDI_SPOT_REFRESH_SECONDS", 3)),
@@ -55,6 +59,7 @@ class WorkerConfig:
             email_threshold=_float("NANDI_EMAIL_THRESHOLD", 80.0),
             confirmation_snapshots=max(1, _int("NANDI_CONFIRMATION_SNAPSHOTS", 2)),
             db_path=os.getenv("NANDI_DB_PATH", "data/nandi_v2.sqlite"),
+            holidays=holidays,
         )
 
 
@@ -64,7 +69,7 @@ def is_weekday(now: datetime) -> bool:
 
 def worker_window(now: datetime, config: WorkerConfig) -> str:
     local = now.astimezone(IST)
-    if not is_weekday(local):
+    if not is_weekday(local) or local.date().isoformat() in config.holidays:
         return "OFF"
     current = local.time().replace(tzinfo=None)
     if current < config.warm_start or current >= config.shutdown_at:
@@ -104,10 +109,10 @@ def _context(now: datetime, points: list[tuple[datetime, float]]) -> MarketConte
 class NandiCloudWorker:
     """Browser-independent NIFTY research worker.
 
-    The process can run continuously on a cloud worker service. It wakes at 08:55
-    IST on weekdays, warms the NSE session, allows new entries only during the
-    regular NSE cash session, and remains alive until 16:00 IST for final state
-    persistence. It never places broker orders.
+    The process can run continuously on an always-on cloud service. It wakes
+    logically at 08:55 IST on trading weekdays, warms the NSE session, allows new
+    entries only during the regular NSE session, and remains alive through 16:00
+    IST for final persistence. It never places broker orders.
     """
 
     def __init__(self, config: WorkerConfig | None = None) -> None:
@@ -115,7 +120,13 @@ class NandiCloudWorker:
         self.nse = NSEPublicClient()
         self.history = DecisionHistory(self.config.db_path)
         self.email = SMTPEmailAlertSink(SMTPSettings.from_mapping())
-        self.trade_state = self.history.latest_trade_state()
+        restored = self.history.latest_trade_state()
+        today = datetime.now(IST).date()
+        if restored.active and restored.opened_at is not None:
+            opened = restored.opened_at.astimezone(IST) if restored.opened_at.tzinfo else restored.opened_at.replace(tzinfo=IST)
+            if opened.date() != today:
+                restored = TradeState(status=TradeStatus.FLAT, updated_at=datetime.now(IST), reason="Previous-session cloud trade state expired on restart.")
+        self.trade_state = restored
         self.latest_chain: OptionChainSnapshot | None = None
         self.latest_spot: float | None = None
         self.points: list[tuple[datetime, float]] = []
@@ -220,8 +231,6 @@ class NandiCloudWorker:
             prepare_threshold=max(60.0, self.config.trade_threshold - 10.0),
         )
 
-        # New entries only during regular market hours. Warmup/cooldown can update
-        # data and close an existing state but cannot create a fresh BUY.
         decision = self._confirm(raw) if mode == "LIVE" else replace(
             raw,
             action=DecisionAction.NO_TRADE,
@@ -248,7 +257,7 @@ class NandiCloudWorker:
         return decision
 
     def run_forever(self) -> None:
-        LOG.info("Nandi cloud worker started; weekday window 08:55-16:00 IST")
+        LOG.info("Nandi cloud worker started; trading-day window 08:55-16:00 IST")
         signal.signal(signal.SIGTERM, self.request_stop)
         signal.signal(signal.SIGINT, self.request_stop)
         while not self.stop_requested:

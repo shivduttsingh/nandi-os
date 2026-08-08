@@ -36,9 +36,12 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
-        def _int(name: str, default: int) -> int:
+        def _int(name: str, default: int, legacy: str | None = None) -> int:
+            raw = os.getenv(name)
+            if raw is None and legacy:
+                raw = os.getenv(legacy)
             try:
-                return int(os.getenv(name, str(default)))
+                return int(raw if raw is not None else default)
             except ValueError:
                 return default
 
@@ -52,8 +55,8 @@ class WorkerConfig:
             item.strip() for item in os.getenv("NANDI_NSE_HOLIDAYS", "").split(",") if item.strip()
         )
         return cls(
-            oi_refresh_seconds=max(15, _int("NANDI_OI_REFRESH_SECONDS", 30)),
-            spot_refresh_seconds=max(2, _int("NANDI_SPOT_REFRESH_SECONDS", 3)),
+            oi_refresh_seconds=max(15, _int("NANDI_NSE_OI_REFRESH_SECONDS", 30, "NANDI_OI_REFRESH_SECONDS")),
+            spot_refresh_seconds=max(2, _int("NANDI_NSE_SPOT_REFRESH_SECONDS", 3, "NANDI_SPOT_REFRESH_SECONDS")),
             idle_sleep_seconds=max(5, _int("NANDI_IDLE_SLEEP_SECONDS", 30)),
             trade_threshold=_float("NANDI_TRADE_THRESHOLD", 75.0),
             email_threshold=_float("NANDI_EMAIL_THRESHOLD", 80.0),
@@ -107,13 +110,7 @@ def _context(now: datetime, points: list[tuple[datetime, float]]) -> MarketConte
 
 
 class NandiCloudWorker:
-    """Browser-independent NIFTY research worker.
-
-    The process can run continuously on an always-on cloud service. It wakes
-    logically at 08:55 IST on trading weekdays, warms the NSE session, allows new
-    entries only during the regular NSE session, and remains alive through 16:00
-    IST for final persistence. It never places broker orders.
-    """
+    """Browser-independent NIFTY research worker."""
 
     def __init__(self, config: WorkerConfig | None = None) -> None:
         self.config = config or WorkerConfig.from_env()
@@ -175,7 +172,6 @@ class NandiCloudWorker:
             self.candidate_count = 0
             self.last_confirmed_snapshot = ""
             return raw
-
         snapshot_key = raw.data_timestamp.isoformat() if raw.data_timestamp else ""
         if snapshot_key == self.last_confirmed_snapshot:
             count = self.candidate_count
@@ -186,7 +182,6 @@ class NandiCloudWorker:
         self.candidate_side = raw.side
         self.candidate_count = count
         self.last_confirmed_snapshot = snapshot_key
-
         if count >= self.config.confirmation_snapshots:
             return raw
         action = DecisionAction.PREPARE_CE if raw.side == "CE" else DecisionAction.PREPARE_PE
@@ -215,28 +210,15 @@ class NandiCloudWorker:
         mode = worker_window(now, self.config)
         if mode == "OFF":
             return None
-
         monotonic_now = time.monotonic()
         self._refresh(monotonic_now, force_oi=(mode == "WARMUP" and self.latest_chain is None))
         if self.latest_chain is None or self.latest_spot is None:
             return None
-
         snapshot = replace(self.latest_chain, spot=float(self.latest_spot))
         context = _context(now, self.points)
         self.history.append_market_frame(snapshot, context)
-        raw = decide(
-            snapshot,
-            context,
-            trade_threshold=self.config.trade_threshold,
-            prepare_threshold=max(60.0, self.config.trade_threshold - 10.0),
-        )
-
-        decision = self._confirm(raw) if mode == "LIVE" else replace(
-            raw,
-            action=DecisionAction.NO_TRADE,
-            blockers=tuple(dict.fromkeys((f"Worker mode {mode}: new entries disabled",) + raw.blockers)),
-        )
-
+        raw = decide(snapshot, context, trade_threshold=self.config.trade_threshold, prepare_threshold=max(60.0, self.config.trade_threshold - 10.0))
+        decision = self._confirm(raw) if mode == "LIVE" else replace(raw, action=DecisionAction.NO_TRADE, blockers=tuple(dict.fromkeys((f"Worker mode {mode}: new entries disabled",) + raw.blockers)))
         previous = self.trade_state
         if mode == "LIVE":
             current = advance_trade_state(previous, decision, snapshot.spot, now)
@@ -246,11 +228,9 @@ class NandiCloudWorker:
                 current = replace(current, status=TradeStatus.EXIT, updated_at=now, reason="Regular NSE session ended; cloud worker closed the research trade state.")
         else:
             current = TradeState(status=TradeStatus.FLAT, updated_at=now, reason=f"Worker mode {mode}.")
-
         self.trade_state = current
         if current != previous:
             self.history.append_trade_event(current, spot=snapshot.spot, decision=decision)
-
         signal_key = self._record_decision(decision, snapshot)
         if not previous.active and current.active:
             self._send_entry_email(decision, snapshot, signal_key)
@@ -275,10 +255,7 @@ class NandiCloudWorker:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.getenv("NANDI_LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    logging.basicConfig(level=os.getenv("NANDI_LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     NandiCloudWorker().run_forever()
 
 

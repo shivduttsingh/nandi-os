@@ -12,7 +12,6 @@ def at(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
 
 def test_weekday_worker_window() -> None:
     config = WorkerConfig()
-    # Monday
     assert worker_window(at(2026, 8, 10, 8, 54), config) == "OFF"
     assert worker_window(at(2026, 8, 10, 8, 55), config) == "WARMUP"
     assert worker_window(at(2026, 8, 10, 9, 14), config) == "WARMUP"
@@ -31,3 +30,8 @@ def test_weekend_is_always_off() -> None:
     assert not is_weekday(sunday)
     assert worker_window(saturday, config) == "OFF"
     assert worker_window(sunday, config) == "OFF"
+
+
+def test_configured_nse_holiday_is_off() -> None:
+    config = WorkerConfig(holidays=frozenset({"2026-08-10"}))
+    assert worker_window(at(2026, 8, 10, 9, 30), config) == "OFF"

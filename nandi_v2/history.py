@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .fundamentals import FundamentalBias, FundamentalFactor
 from .lifecycle import TradeState, TradeStatus
 from .models import Decision, MarketContext, OptionChainSnapshot, OptionLeg, StrikeRow
 
@@ -73,11 +74,28 @@ class DecisionHistory:
                     context_payload TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_market_frames_observed_at ON market_frames(observed_at ASC);
+
+                CREATE TABLE IF NOT EXISTS fundamental_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    factor_key TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    bias TEXT NOT NULL,
+                    impact REAL NOT NULL,
+                    confidence REAL NOT NULL,
+                    max_age_minutes INTEGER NOT NULL,
+                    source TEXT,
+                    note TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_fundamental_factor_id
+                    ON fundamental_events(factor_key, id DESC);
             """)
 
     @staticmethod
     def signal_key(decision: Decision, spot: float, expiry: str) -> str:
-        stamp = decision.data_timestamp or decision.generated_at or datetime.utcnow()
+        stamp = decision.data_timestamp or decision.generated_at or datetime.now(timezone.utc)
         trading_day = stamp.strftime("%Y%m%d")
         strike = int(decision.selected_strike or 0)
         return f"{trading_day}:{decision.side}:{strike}:{expiry}"
@@ -85,7 +103,7 @@ class DecisionHistory:
     def append(self, decision: Decision, spot: float, expiry: str, signal_key: str | None = None) -> str:
         key = signal_key or self.signal_key(decision, spot, expiry)
         payload = json.dumps(decision.to_record(), separators=(",", ":"))
-        generated = decision.generated_at or datetime.utcnow()
+        generated = decision.generated_at or datetime.now(timezone.utc)
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO decisions
@@ -126,7 +144,7 @@ class DecisionHistory:
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO alerts(signal_key, sent_at, delivered, error) VALUES (?, ?, ?, ?)",
-                (signal_key, datetime.utcnow().isoformat(), int(delivered), error),
+                (signal_key, datetime.now(timezone.utc).isoformat(), int(delivered), error),
             )
 
     @staticmethod
@@ -178,14 +196,14 @@ class DecisionHistory:
 
     @staticmethod
     def trade_event_key(state: TradeState, decision: Decision | None = None) -> str:
-        stamp = state.updated_at or state.opened_at or datetime.utcnow()
+        stamp = state.updated_at or state.opened_at or datetime.now(timezone.utc)
         decision_stamp = decision.data_timestamp.isoformat() if decision and decision.data_timestamp else ""
         return ":".join([stamp.isoformat(), state.status.value, state.side, str(int(state.selected_strike or 0)), decision_stamp])
 
     def append_trade_event(self, state: TradeState, *, spot: float | None = None, decision: Decision | None = None) -> bool:
         key = self.trade_event_key(state, decision)
         payload = json.dumps(self._trade_payload(state), separators=(",", ":"))
-        event_at = state.updated_at or state.opened_at or datetime.utcnow()
+        event_at = state.updated_at or state.opened_at or datetime.now(timezone.utc)
         with self._connect() as connection:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO trade_events
@@ -340,9 +358,82 @@ class DecisionHistory:
             ).fetchall()
         return [str(row["day"]) for row in rows if row["day"]]
 
+    def append_fundamental_factors(
+        self,
+        factors: list[FundamentalFactor] | tuple[FundamentalFactor, ...],
+        *,
+        recorded_at: datetime | None = None,
+    ) -> int:
+        stamp = recorded_at or datetime.now(timezone.utc)
+        rows = [
+            (
+                factor.key,
+                stamp.isoformat(),
+                factor.observed_at.isoformat(),
+                factor.name,
+                factor.category,
+                factor.bias.value,
+                max(0.0, min(100.0, float(factor.impact))),
+                max(0.0, min(1.0, float(factor.confidence))),
+                max(1, int(factor.max_age_minutes)),
+                factor.source,
+                factor.note,
+            )
+            for factor in factors
+        ]
+        if not rows:
+            return 0
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT INTO fundamental_events
+                (factor_key, recorded_at, observed_at, name, category, bias, impact,
+                 confidence, max_age_minutes, source, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+        return len(rows)
+
+    def latest_fundamental_factors(self) -> tuple[FundamentalFactor, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT event.factor_key, event.observed_at, event.name, event.category,
+                          event.bias, event.impact, event.confidence,
+                          event.max_age_minutes, event.source, event.note
+                   FROM fundamental_events AS event
+                   INNER JOIN (
+                       SELECT factor_key, MAX(id) AS latest_id
+                       FROM fundamental_events
+                       GROUP BY factor_key
+                   ) AS latest ON latest.latest_id = event.id
+                   ORDER BY event.factor_key"""
+            ).fetchall()
+        factors: list[FundamentalFactor] = []
+        for row in rows:
+            try:
+                bias = FundamentalBias(str(row["bias"]))
+                observed_at = datetime.fromisoformat(str(row["observed_at"]))
+            except (TypeError, ValueError):
+                continue
+            factors.append(
+                FundamentalFactor(
+                    key=str(row["factor_key"]),
+                    name=str(row["name"]),
+                    category=str(row["category"]),
+                    bias=bias,
+                    impact=float(row["impact"]),
+                    confidence=float(row["confidence"]),
+                    observed_at=observed_at,
+                    max_age_minutes=int(row["max_age_minutes"]),
+                    source=str(row["source"] or "Manual research input"),
+                    note=str(row["note"] or ""),
+                )
+            )
+        return tuple(factors)
+
     def clear(self) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM decisions")
             connection.execute("DELETE FROM alerts")
             connection.execute("DELETE FROM trade_events")
             connection.execute("DELETE FROM market_frames")
+            connection.execute("DELETE FROM fundamental_events")

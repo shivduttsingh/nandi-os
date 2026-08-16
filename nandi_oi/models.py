@@ -10,6 +10,19 @@ Action = Literal["BUY CE", "BUY PE", "NO TRADE"]
 
 
 @dataclass(frozen=True)
+class IntradayCandle:
+    """One read-only Upstox OHLC candle for the NIFTY underlying."""
+
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+    open_interest: float = 0.0
+
+
+@dataclass(frozen=True)
 class OptionLeg:
     strike: float
     side: Side

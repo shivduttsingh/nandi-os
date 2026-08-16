@@ -6,8 +6,8 @@ Nandi V2 replaces the previous collection of separate strategy screens with one 
 
 ## Live architecture
 
-- **Market data:** NSE adapter for NIFTY spot and option-chain evidence.
-- **Chart:** TradingView embedded for visual NIFTY charting only; it is not used as a hidden decision-data feed.
+- **Market data:** NSE adapter for NIFTY spot and option-chain evidence, plus optional read-only Upstox V3 NIFTY candles.
+- **Chart:** TradingView Lightweight Charts™ renders Upstox OHLC candles; the hosted TradingView NSE widget is not a hidden decision-data feed.
 - **Strike window:** ATM plus five strikes above and five below.
 - **Decision states:** `BUY CE`, `BUY PE`, `PREPARE CE`, `PREPARE PE`, `NO TRADE`.
 - **Trade threshold:** default 75/100 setup-quality score.
@@ -40,7 +40,7 @@ Nandi manages research state through:
 
 `PREPARE -> ACTIVE -> HOLD -> BOOK PARTIAL / TRAIL -> EXIT`
 
-The lifecycle handles spot invalidation, Target 1, Target 2, opposite-side confirmation and session close. Lifecycle transitions are persisted in SQLite and restored after an app restart. Active states from an earlier trading date are not resumed as current-day trades.
+The lifecycle holds a confirmed direction for 15 minutes by default, so opposite evidence becomes a warning instead of an instant CE/PE flip. After an exit, a default 5-minute cooldown blocks immediate reversal. Spot invalidation, Target 1 and Target 2 remain immediate risk actions. Lifecycle transitions are persisted in SQLite and restored after an app restart. Active states from an earlier trading date are not resumed as current-day trades.
 
 ## Persistence and replay
 
@@ -51,9 +51,11 @@ SQLite stores:
 - trade lifecycle events
 - captured NSE replay frames and matching market context
 
+The Results page reconstructs completed ACTIVE-to-EXIT trades from those events and reports daily, weekly and monthly totals in underlying NIFTY points. It does not invent option-premium P&L.
+
 The Replay page re-runs the V2 engine deterministically on captured frames using the same fresh-snapshot confirmation rule as live mode. Nandi never invents missing historical frames.
 
-## Required Streamlit Secrets
+## Streamlit Secrets
 
 ```toml
 [auth]
@@ -71,9 +73,12 @@ use_tls = true
 
 [nse]
 holidays = ["YYYY-MM-DD"]
+
+[upstox]
+access_token = "YOUR_READ_ONLY_ACCESS_TOKEN"
 ```
 
-Do not commit real credentials.
+The Upstox section is optional but required for the 15-minute candlestick chart. Do not commit real credentials.
 
 ## Deployment checklist
 
@@ -81,12 +86,15 @@ Do not commit real credentials.
 2. Configure SMTP secrets if 80+ entry emails are required.
 3. Add current NSE trading holidays to the `nse.holidays` list.
 4. Confirm the deployment has persistent storage if decision/replay history must survive container replacement.
-5. Confirm the TradingView widget loads `NSE:NIFTY`.
-6. Confirm NSE data timestamps are visible and advancing during market hours.
-7. Confirm the first rolling OI snapshot remains neutral and no BUY is emitted solely from the baseline.
-8. Confirm a BUY requires the configured number of distinct fresh NSE snapshots.
-9. Confirm one successful 80+ entry setup produces only one email per day/side/strike/expiry.
-10. Confirm CI is green before merging to `main`.
+5. Configure a read-only Upstox token if the 15-minute candlestick chart is required.
+6. Confirm the chart labels Upstox as its data source and renders with TradingView Lightweight Charts™.
+7. Confirm only completed 15-minute candles enter market-structure context.
+8. Confirm NSE data timestamps are visible and advancing during market hours.
+9. Confirm the first rolling OI snapshot remains neutral and no BUY is emitted solely from the baseline.
+10. Confirm a BUY requires the configured number of distinct fresh NSE snapshots.
+11. Confirm an opposite signal cannot flip an active trade during its minimum hold, while a stop can still exit immediately.
+12. Confirm one successful 80+ entry setup produces only one email per day/side/strike/expiry.
+13. Confirm CI is green before merging to `main`.
 
 ## Production NSE note
 

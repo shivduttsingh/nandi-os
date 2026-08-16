@@ -75,6 +75,16 @@ def _opposite_confirmed(decision: Decision, side: str) -> bool:
     return decision.action == DecisionAction.BUY_CE
 
 
+def _elapsed_minutes(start: datetime | None, now: datetime) -> float:
+    if start is None:
+        return 0.0
+    if start.tzinfo is None and now.tzinfo is not None:
+        start = start.replace(tzinfo=now.tzinfo)
+    elif start.tzinfo is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=start.tzinfo)
+    return max(0.0, (now - start).total_seconds() / 60.0)
+
+
 def advance_trade_state(
     state: TradeState,
     decision: Decision,
@@ -83,6 +93,8 @@ def advance_trade_state(
     *,
     exit_score: float = 60.0,
     trail_after_target_1: bool = True,
+    minimum_hold_minutes: float = 15.0,
+    reversal_cooldown_minutes: float = 5.0,
 ) -> TradeState:
     """Advance one deterministic trade lifecycle step.
 
@@ -93,6 +105,13 @@ def advance_trade_state(
     side = decision.side
 
     if not state.active:
+        if state.status == TradeStatus.EXIT and state.updated_at is not None:
+            cooldown_left = reversal_cooldown_minutes - _elapsed_minutes(state.updated_at, now)
+            if cooldown_left > 0:
+                return replace(
+                    state,
+                    reason=f"Reversal cooldown active; new CE/PE entries are blocked for {cooldown_left:.1f} more minute(s).",
+                )
         if decision.action in {DecisionAction.PREPARE_CE, DecisionAction.PREPARE_PE}:
             return TradeState(
                 status=_prepare_status(side),
@@ -120,10 +139,6 @@ def advance_trade_state(
     active_side = state.side
     if _stop_hit(active_side, spot, state.stop_spot):
         return replace(state, status=TradeStatus.EXIT, updated_at=now, reason="Spot invalidation / stop-loss reached.")
-    if _opposite_confirmed(decision, active_side):
-        return replace(state, status=TradeStatus.EXIT, updated_at=now, reason="Opposite-side setup is now confirmed.")
-    if decision.score < exit_score and decision.side not in {active_side, "NONE"}:
-        return replace(state, status=TradeStatus.EXIT, updated_at=now, reason="Directional evidence deteriorated below exit threshold.")
 
     peak = state.peak_favourable_spot
     if peak is None or _favourable(active_side, spot, peak):
@@ -146,5 +161,21 @@ def advance_trade_state(
             )
         if trail_after_target_1:
             return replace(state, status=TradeStatus.TRAIL, updated_at=now, peak_favourable_spot=peak, reason="Hold remainder with trailing stop.")
+
+    hold_left = minimum_hold_minutes - _elapsed_minutes(state.opened_at, now)
+    if hold_left > 0:
+        warning = " Opposite-side evidence is a warning only." if _opposite_confirmed(decision, active_side) else ""
+        return replace(
+            state,
+            status=TradeStatus.HOLD,
+            updated_at=now,
+            peak_favourable_spot=peak,
+            reason=f"Minimum {minimum_hold_minutes:g}-minute hold active; review in {hold_left:.1f} minute(s).{warning}",
+        )
+
+    if _opposite_confirmed(decision, active_side):
+        return replace(state, status=TradeStatus.EXIT, updated_at=now, reason="Opposite-side setup confirmed after the minimum hold.")
+    if decision.score < exit_score and decision.side not in {active_side, "NONE"}:
+        return replace(state, status=TradeStatus.EXIT, updated_at=now, reason="Directional evidence deteriorated below exit threshold.")
 
     return replace(state, status=TradeStatus.HOLD, updated_at=now, peak_favourable_spot=peak, reason="Trade remains structurally valid.")

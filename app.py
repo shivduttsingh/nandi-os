@@ -9,9 +9,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
+from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
+from nandi_v2.charting import candlestick_chart_html, completed_candles
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
 from nandi_v2.engine import decide, strike_evidence_rows
 from nandi_v2.history import DecisionHistory
@@ -19,6 +22,7 @@ from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
 from nandi_v2.nse import NSEDataError, NSEPublicClient
 from nandi_v2.replay import NandiReplay
+from nandi_v2.results import completed_trades, result_rows, trade_rows
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -77,8 +81,20 @@ def history_store() -> DecisionHistory:
     return DecisionHistory()
 
 
+@st.cache_resource
+def upstox_candle_client(access_token: str) -> UpstoxOptionChainClient:
+    return UpstoxOptionChainClient(access_token=access_token, timeout_seconds=15)
+
+
 def now_ist() -> datetime:
     return datetime.now(IST)
+
+
+def configured_upstox_token() -> str:
+    token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
+    if not is_configured_value(token):
+        token = str(secret_section("upstox").get("access_token", ""))
+    return token if is_configured_value(token) else ""
 
 
 def market_schedule():
@@ -111,8 +127,11 @@ def init_state() -> None:
         "latest_spot_timestamp": None,
         "last_oi_fetch_at": None,
         "last_spot_fetch_at": None,
+        "last_upstox_candle_fetch_at": None,
         "last_data_error": "",
+        "upstox_candle_error": "",
         "spot_points": [],
+        "latest_upstox_candles": tuple(),
         "latest_confirmed_decision": None,
         "candidate_side": "",
         "candidate_count": 0,
@@ -124,7 +143,11 @@ def init_state() -> None:
         "email_threshold": 80.0,
         "oi_refresh_seconds": 30,
         "spot_refresh_seconds": 3,
-        "confirmation_evaluations": 2,
+        "confirmation_evaluations": 3,
+        "stable_interval_minutes": 15,
+        "candle_refresh_seconds": 30,
+        "minimum_hold_minutes": 15,
+        "reversal_cooldown_minutes": 5,
         "trade_state": restored,
         "trade_fingerprint": trade_fingerprint(restored),
     }
@@ -179,8 +202,7 @@ def append_spot(spot: float, timestamp: datetime) -> None:
     st.session_state.spot_points = points[-600:]
 
 
-def momentum_rsi(points: list[tuple[str, float]], period: int = 14) -> float | None:
-    prices = [float(value) for _, value in points]
+def momentum_rsi_prices(prices: list[float], period: int = 14) -> float | None:
     if len(prices) < period + 1:
         return None
     changes = [b - a for a, b in zip(prices, prices[1:])][-period:]
@@ -191,7 +213,25 @@ def momentum_rsi(points: list[tuple[str, float]], period: int = 14) -> float | N
     return 100.0 - 100.0 / (1.0 + gains / losses)
 
 
+def momentum_rsi(points: list[tuple[str, float]], period: int = 14) -> float | None:
+    return momentum_rsi_prices([float(value) for _, value in points], period)
+
+
 def market_context(now: datetime) -> MarketContext:
+    completed = completed_candles(
+        st.session_state.latest_upstox_candles,
+        now,
+        int(st.session_state.stable_interval_minutes),
+    )
+    if completed:
+        reference = completed[-8:]
+        return MarketContext(
+            observed_at=now,
+            previous_spot=completed[-1].close,
+            recent_high=max(item.high for item in reference),
+            recent_low=min(item.low for item in reference),
+            momentum_rsi=momentum_rsi_prices([item.close for item in completed]),
+        )
     prices = [float(value) for _, value in st.session_state.spot_points]
     previous = prices[-2] if len(prices) >= 2 else None
     reference = prices[-41:-1] if len(prices) >= 3 else prices[:-1]
@@ -225,6 +265,23 @@ def refresh_market_data(now: datetime) -> None:
             errors.append(f"Spot: {exc}")
         finally:
             st.session_state.last_spot_fetch_at = now
+    token = configured_upstox_token()
+    fetch_candles = bool(token) and (
+        force
+        or not st.session_state.latest_upstox_candles
+        or seconds_since(st.session_state.last_upstox_candle_fetch_at, now)
+        >= st.session_state.candle_refresh_seconds
+    )
+    if fetch_candles:
+        try:
+            st.session_state.latest_upstox_candles = upstox_candle_client(token).fetch_intraday_candles(
+                int(st.session_state.stable_interval_minutes)
+            )
+            st.session_state.upstox_candle_error = ""
+        except (UpstoxAPIError, ValueError) as exc:
+            st.session_state.upstox_candle_error = str(exc)
+        finally:
+            st.session_state.last_upstox_candle_fetch_at = now
     st.session_state.last_data_error = " | ".join(dict.fromkeys(errors))
 
 
@@ -255,14 +312,20 @@ def smtp_settings() -> SMTPSettings:
     return SMTPSettings.from_mapping(secret_section("alerts"))
 
 
-def record_and_alert(decision: Decision, snapshot: OptionChainSnapshot) -> None:
+def record_and_alert(
+    decision: Decision, snapshot: OptionChainSnapshot, *, allow_entry_alert: bool,
+) -> None:
     signature = f"{decision.action.value}:{round(decision.score,1)}:{round(snapshot.spot,1)}:{snapshot.timestamp.isoformat()}"
     if signature != st.session_state.last_history_signature:
         signal_key = history_store().append(decision, snapshot.spot, snapshot.expiry)
         st.session_state.last_history_signature = signature
     else:
         signal_key = history_store().signal_key(decision, snapshot.spot, snapshot.expiry)
-    if not is_entry_alert(decision, float(st.session_state.email_threshold)) or history_store().alert_exists(signal_key):
+    if (
+        not allow_entry_alert
+        or not is_entry_alert(decision, float(st.session_state.email_threshold))
+        or history_store().alert_exists(signal_key)
+    ):
         return
     delivery = SMTPEmailAlertSink(smtp_settings()).send_decision(decision, snapshot.spot, snapshot.expiry)
     history_store().record_alert(signal_key, delivery.delivered, delivery.error)
@@ -289,14 +352,25 @@ def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Deci
     previous = st.session_state.trade_state
     if gate.allowed:
         confirmed = confirm_decision(raw)
-        current = advance_trade_state(previous, confirmed, snapshot.spot, now)
+        current = advance_trade_state(
+            previous,
+            confirmed,
+            snapshot.spot,
+            now,
+            minimum_hold_minutes=float(st.session_state.minimum_hold_minutes),
+            reversal_cooldown_minutes=float(st.session_state.reversal_cooldown_minutes),
+        )
     else:
         confirmed = replace(raw, action=DecisionAction.NO_TRADE, blockers=tuple(dict.fromkeys((gate.reason,) + raw.blockers)))
         current = replace(previous, status=TradeStatus.EXIT, updated_at=now, reason="NSE regular session is closed.") if previous.active else previous
     st.session_state.trade_state = current
     persist_trade(previous, current, confirmed, snapshot.spot)
     st.session_state.latest_confirmed_decision = confirmed
-    record_and_alert(confirmed, snapshot)
+    record_and_alert(
+        confirmed,
+        snapshot,
+        allow_entry_alert=not previous.active and current.active,
+    )
     return snapshot, confirmed, gate
 
 
@@ -312,12 +386,21 @@ def fmt(value: float | None) -> str:
     return "—" if value is None else f"{value:,.2f}"
 
 
+def lifecycle_action(decision: Decision, trade: TradeState) -> tuple[str, str]:
+    if trade.active:
+        return f"{trade.side} ACTIVE — {trade.status.value}", "buy"
+    if trade.status == TradeStatus.EXIT and trade.side in {"CE", "PE"}:
+        return f"EXIT {trade.side} — COOLDOWN", "no"
+    return decision.action.value, action_class(decision.action)
+
+
 def decision_card(decision: Decision, snapshot: OptionChainSnapshot, gate: Any) -> str:
     reasons = "".join(f'<div class="reason">{escape(reason)}</div>' for reason in decision.reasons[:5])
     blockers = "".join(f'<div class="blocker">{escape(blocker)}</div>' for blocker in decision.blockers[:5])
     trade: TradeState = st.session_state.trade_state
+    displayed_action, displayed_class = lifecycle_action(decision, trade)
     levels = decision.levels
-    return f'''<div class="decision"><div class="label">Final decision</div><div class="value {action_class(decision.action)}">{escape(decision.action.value)}</div><div class="note">Setup score {decision.score:.1f}/100 · CE {decision.ce_score:.1f} · PE {decision.pe_score:.1f} · {escape(gate.status.label)}</div><div class="grid"><div class="cell"><span class="label">Strike</span><b>{fmt(decision.selected_strike)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(snapshot.expiry)}</b></div><div class="cell"><span class="label">Entry</span><b>{fmt(levels.entry)}</b></div><div class="cell"><span class="label">Stop</span><b>{fmt(levels.stop)}</b></div><div class="cell"><span class="label">Target 1</span><b>{fmt(levels.target_1)}</b></div><div class="cell"><span class="label">Target 2</span><b>{fmt(levels.target_2)}</b></div></div><div style="margin-top:.75rem">{reasons}{blockers}</div><div class="trade"><span class="label">Lifecycle</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.65rem">OI: {snapshot.timestamp.astimezone(IST).strftime('%H:%M:%S')} IST · {escape(snapshot.source)}</div></div>'''
+    return f'''<div class="decision"><div class="label">Stable trade state</div><div class="value {displayed_class}">{escape(displayed_action)}</div><div class="note">Raw evidence: {escape(decision.action.value)} · Setup score {decision.score:.1f}/100 · CE {decision.ce_score:.1f} · PE {decision.pe_score:.1f} · {escape(gate.status.label)}</div><div class="grid"><div class="cell"><span class="label">Strike</span><b>{fmt(decision.selected_strike)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(snapshot.expiry)}</b></div><div class="cell"><span class="label">Entry</span><b>{fmt(levels.entry)}</b></div><div class="cell"><span class="label">Stop</span><b>{fmt(levels.stop)}</b></div><div class="cell"><span class="label">Target 1</span><b>{fmt(levels.target_1)}</b></div><div class="cell"><span class="label">Target 2</span><b>{fmt(levels.target_2)}</b></div></div><div style="margin-top:.75rem">{reasons}{blockers}</div><div class="trade"><span class="label">Lifecycle</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.65rem">OI: {snapshot.timestamp.astimezone(IST).strftime('%H:%M:%S')} IST · {escape(snapshot.source)}</div></div>'''
 
 
 @st.fragment(run_every="1s")
@@ -335,8 +418,39 @@ def live_engine_fragment() -> None:
 
 @st.fragment(run_every="2s")
 def live_chart_fragment() -> None:
+    candles = tuple(st.session_state.latest_upstox_candles)
     points = list(st.session_state.spot_points)
     spot = st.session_state.latest_spot
+    if candles:
+        interval = int(st.session_state.stable_interval_minutes)
+        completed = completed_candles(candles, now_ist(), interval)
+        structure = "WAIT / RANGE"
+        if len(completed) >= 2:
+            previous, latest = completed[-2], completed[-1]
+            if latest.close > previous.high:
+                structure = "BULLISH BREAKOUT"
+            elif latest.close < previous.low:
+                structure = "BEARISH BREAKDOWN"
+        cols = st.columns(4)
+        live_value = float(spot if spot is not None else candles[-1].close)
+        cols[0].metric("NIFTY live", f"{live_value:,.2f}")
+        cols[1].metric("Stable timeframe", f"{interval} min")
+        cols[2].metric("Completed candles", len(completed))
+        cols[3].metric("Closed-candle structure", structure)
+        components.html(
+            candlestick_chart_html(candles, interval_minutes=interval),
+            height=625,
+            scrolling=False,
+        )
+        last_completed = completed[-1].timestamp.strftime("%I:%M %p") if completed else "Waiting"
+        st.caption(
+            f"Upstox V3 OHLC · last completed candle {last_completed} IST · "
+            "only completed candles enter Nandi's market-structure context."
+        )
+        if st.session_state.upstox_candle_error:
+            st.warning("Latest Upstox candle refresh failed; the last valid chart remains visible. " + st.session_state.upstox_candle_error)
+        st.link_button("Open full TradingView", TRADINGVIEW_NIFTY_URL)
+        return
     if spot is not None:
         cols = st.columns([1, 1, 2])
         cols[0].metric("NIFTY live", f"{spot:,.2f}")
@@ -348,8 +462,13 @@ def live_chart_fragment() -> None:
         frame["Time"] = pd.to_datetime(frame["Time"])
         st.line_chart(frame.set_index("Time"), height=430)
     else:
-        st.info("The live NSE chart starts drawing as spot samples arrive.")
-    st.caption("TradingView cannot legally display NSE:NIFTY inside its public widget. Use the link below for the TradingView chart; Nandi's internal chart uses NSE spot samples.")
+        st.info("The fallback NSE chart starts drawing as spot samples arrive.")
+    if configured_upstox_token():
+        st.caption("Waiting for the Upstox 15-minute candle feed. Nandi is temporarily showing NSE spot samples.")
+    else:
+        st.caption("Add the read-only Upstox token to show stable 15-minute candles. Nandi is using its NSE spot fallback.")
+    if st.session_state.upstox_candle_error:
+        st.warning(st.session_state.upstox_candle_error)
     st.link_button("Open NIFTY on TradingView", TRADINGVIEW_NIFTY_URL)
 
 
@@ -392,13 +511,15 @@ def evidence_fragment() -> None:
             "Option-chain age seconds": round(seconds_since(snapshot.timestamp, now_ist()), 1),
             "OI network refresh": f"{st.session_state.oi_refresh_seconds}s",
             "Spot network refresh": f"{st.session_state.spot_refresh_seconds}s",
+            "Upstox candle refresh": f"{st.session_state.candle_refresh_seconds}s" if configured_upstox_token() else "Not configured",
+            "Stable structure interval": f"{st.session_state.stable_interval_minutes} minutes",
             "Decision recalculation": "1s",
-            "TradingView embed": "Unavailable for NSE:NIFTY due to TradingView exchange permissions",
+            "TradingView rendering": "Lightweight Charts with Upstox OHLC; hosted NSE widget not used",
         })
 
 
 def live_page() -> None:
-    header("Live Decision", "Automatic NSE option-chain + NIFTY spot analysis. No screenshots are required once the feed is healthy.")
+    header("Live Decision", "NSE option-chain evidence with stable 15-minute Upstox structure and a locked CE/PE lifecycle.")
     controls = st.columns([1, 1, 1, 2])
     if controls[0].button("Refresh NSE now", type="primary", use_container_width=True):
         st.session_state.force_refresh = True
@@ -452,6 +573,29 @@ def replay_page() -> None:
     st.dataframe(frame, use_container_width=True, hide_index=True, height=520)
 
 
+def results_page() -> None:
+    header("Results", "Completed Nandi V2 trades grouped by day, week and month.")
+    trades = completed_trades(history_store().trade_events())
+    if not trades:
+        st.info("Daily, weekly and monthly results will appear after Nandi records its first completed trade lifecycle.")
+        return
+    wins = sum(item.points > 0 for item in trades)
+    metrics = st.columns(5)
+    metrics[0].metric("Completed trades", len(trades))
+    metrics[1].metric("Win rate", f"{wins / len(trades) * 100:.1f}%")
+    metrics[2].metric("Net NIFTY points", f"{sum(item.points for item in trades):+.2f}")
+    metrics[3].metric("CE trades", sum(item.side == "CE" for item in trades))
+    metrics[4].metric("PE trades", sum(item.side == "PE" for item in trades))
+    daily, weekly, monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+    for tab, period in ((daily, "daily"), (weekly, "weekly"), (monthly, "monthly")):
+        with tab:
+            rows = result_rows(trades, period)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    with st.expander("Completed trade ledger"):
+        st.dataframe(pd.DataFrame(trade_rows(trades)), use_container_width=True, hide_index=True)
+    st.caption("Results use NIFTY underlying points from persisted ACTIVE-to-EXIT lifecycle events. They do not estimate option-premium P&L.")
+
+
 def settings_page() -> None:
     header("Settings", "Tune live refresh and setup gates without changing the engine code.")
     left, right = st.columns(2, gap="large")
@@ -461,19 +605,30 @@ def settings_page() -> None:
         st.session_state.confirmation_evaluations = st.slider("Fresh OI snapshots required", 1, 5, int(st.session_state.confirmation_evaluations), 1)
         st.session_state.oi_refresh_seconds = st.slider("NSE OI refresh seconds", 15, 120, int(st.session_state.oi_refresh_seconds), 5)
         st.session_state.spot_refresh_seconds = st.slider("NSE spot refresh seconds", 2, 30, int(st.session_state.spot_refresh_seconds), 1)
+        st.session_state.minimum_hold_minutes = st.slider("Minimum stable hold minutes", 5, 30, int(st.session_state.minimum_hold_minutes), 1)
+        st.session_state.reversal_cooldown_minutes = st.slider("Reversal cooldown minutes", 0, 15, int(st.session_state.reversal_cooldown_minutes), 1)
     with right:
         smtp = smtp_settings()
         st.subheader("Email alerts")
         st.write({"Configured": smtp.configured, "Host": smtp.host or "Not configured", "Recipient": smtp.recipient or "Not configured"})
         st.caption("Email sends only on a confirmed BUY at or above the configured email score.")
         st.subheader("Live data")
-        st.markdown("**NSE:** option-chain-v3 and index spot.  \n**TradingView:** external chart link only because the public widget is not licensed to display NSE:NIFTY.  \n**Broker feeds:** disabled.")
+        st.markdown(
+            "**NSE:** option-chain-v3 and live index spot.  \n"
+            "**Upstox:** read-only 15-minute NIFTY OHLC candles for stable structure.  \n"
+            "**TradingView:** Lightweight Charts rendering plus external full-chart link."
+        )
+        st.write({
+            "Upstox candle feed": "Configured" if configured_upstox_token() else "Not configured",
+            "Stable timeframe": f"{st.session_state.stable_interval_minutes} minutes",
+            "Forming candle": "Displayed — excluded from completed-candle structure",
+        })
 
 
 def sidebar() -> str:
     st.sidebar.markdown("## Nandi")
     st.sidebar.caption("Live NIFTY decision terminal")
-    page = st.sidebar.radio("Navigation", ["Live Decision", "Evidence", "History", "Replay", "Settings"], label_visibility="collapsed")
+    page = st.sidebar.radio("Navigation", ["Live Decision", "Evidence", "History", "Replay", "Results", "Settings"], label_visibility="collapsed")
     st.sidebar.divider()
     gate = gate_live_signals(now_ist(), market_schedule())
     st.sidebar.caption(f"NSE: {gate.status.label}")
@@ -497,5 +652,7 @@ elif page == "History":
     history_page()
 elif page == "Replay":
     replay_page()
+elif page == "Results":
+    results_page()
 else:
     settings_page()

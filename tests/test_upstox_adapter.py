@@ -47,3 +47,39 @@ def test_sample_token_is_rejected_before_any_network_request():
         assert "sample placeholder" in str(exc)
     else:
         raise AssertionError("Expected a sample token to be rejected")
+
+
+def test_intraday_candles_use_v3_interval_and_sort_oldest_first():
+    class CandleClient(UpstoxOptionChainClient):
+        def _get_v3(self, path):
+            assert path == "/historical-candle/intraday/NSE_INDEX%7CNifty%2050/minutes/15"
+            return {"status": "success", "data": {"candles": [
+                ["2026-08-12T09:30:00+05:30", 25020, 25040, 25010, 25035, 0, 0],
+                ["2026-08-12T09:15:00+05:30", 25000, 25025, 24990, 25020, 0, 0],
+            ]}}
+
+    candles = CandleClient(access_token="test").fetch_intraday_candles(15)
+
+    assert [item.timestamp for item in candles] == [
+        datetime(2026, 8, 12, 9, 15), datetime(2026, 8, 12, 9, 30),
+    ]
+    assert candles[-1].open == 25020
+    assert candles[-1].close == 25035
+
+
+def test_intraday_candles_ignore_bad_rows_and_reject_bad_interval():
+    class CandleClient(UpstoxOptionChainClient):
+        def _get_v3(self, _path):
+            return {"status": "success", "data": {"candles": [
+                ["bad-time", 1, 2, 1, 2],
+                ["2026-08-12T09:15:00+05:30", 25000, 25025, 24990, 25020, 0, 0],
+            ]}}
+
+    client = CandleClient(access_token="test")
+    assert len(client.fetch_intraday_candles(5)) == 1
+    try:
+        client.fetch_intraday_candles(0)
+    except ValueError as exc:
+        assert "between 1 and 300" in str(exc)
+    else:
+        raise AssertionError("Expected an invalid candle interval to be rejected")

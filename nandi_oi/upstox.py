@@ -6,12 +6,12 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .configuration import is_configured_value
 from .market_schedule import IST
-from .models import OptionLeg, OptionSnapshot
+from .models import IntradayCandle, OptionLeg, OptionSnapshot
 
 
 class UpstoxAPIError(RuntimeError):
@@ -22,6 +22,7 @@ class UpstoxOptionChainClient:
     """Read-only Upstox option-chain adapter for NIFTY paper research."""
 
     BASE_URL = "https://api.upstox.com/v2"
+    BASE_URL_V3 = "https://api.upstox.com/v3"
 
     def __init__(
         self,
@@ -37,13 +38,13 @@ class UpstoxOptionChainClient:
         self._last: dict[str, tuple[float, float]] = {}
         self._prior_spots: deque[float] = deque(maxlen=20)
 
-    def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+    def _request_json(self, url: str) -> dict[str, Any]:
         if not is_configured_value(self.access_token):
             raise UpstoxAPIError(
                 "UPSTOX_ACCESS_TOKEN is missing or still contains the sample placeholder"
             )
         request = Request(
-            f"{self.BASE_URL}{path}?{urlencode(params)}",
+            url,
             headers={
                 "Accept": "application/json",
                 "Authorization": f"Bearer {self.access_token}",
@@ -61,6 +62,49 @@ class UpstoxOptionChainClient:
         if payload.get("status") != "success":
             raise UpstoxAPIError(f"Upstox request failed: {payload}")
         return payload
+
+    def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        return self._request_json(f"{self.BASE_URL}{path}?{urlencode(params)}")
+
+    def _get_v3(self, path: str) -> dict[str, Any]:
+        return self._request_json(f"{self.BASE_URL_V3}{path}")
+
+    def fetch_intraday_candles(self, interval_minutes: int = 15) -> tuple[IntradayCandle, ...]:
+        """Return today's NIFTY candles from Upstox V3, oldest first."""
+        if not 1 <= interval_minutes <= 300:
+            raise ValueError("Upstox minute interval must be between 1 and 300")
+        instrument = quote(self.instrument_key, safe="")
+        payload = self._get_v3(
+            f"/historical-candle/intraday/{instrument}/minutes/{interval_minutes}"
+        )
+        rows = (payload.get("data") or {}).get("candles") or []
+        candles: list[IntradayCandle] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 5:
+                continue
+            try:
+                timestamp = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.astimezone(IST).replace(tzinfo=None)
+                opened, high, low, closed = (float(row[index]) for index in range(1, 5))
+            except (TypeError, ValueError):
+                continue
+            if min(opened, high, low, closed) <= 0 or high < low:
+                continue
+            candles.append(
+                IntradayCandle(
+                    timestamp=timestamp,
+                    open=opened,
+                    high=high,
+                    low=low,
+                    close=closed,
+                    volume=self._number(row[5]) if len(row) > 5 else 0.0,
+                    open_interest=self._number(row[6]) if len(row) > 6 else 0.0,
+                )
+            )
+        if not candles:
+            raise UpstoxAPIError("Upstox returned no valid NIFTY intraday candles")
+        return tuple(sorted(candles, key=lambda candle: candle.timestamp))
 
     def fetch_raw_chain(self) -> list[dict[str, Any]]:
         payload = self._get(

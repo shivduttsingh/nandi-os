@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from .configuration import is_configured_value
 from .market_schedule import IST
-from .models import IntradayCandle, OptionLeg, OptionSnapshot
+from .models import ATMOptionInstruments, IntradayCandle, OptionLeg, OptionSnapshot
 
 
 class UpstoxAPIError(RuntimeError):
@@ -103,17 +103,27 @@ class UpstoxOptionChainClient:
             )
         return tuple(sorted(candles, key=lambda candle: candle.timestamp))
 
-    def fetch_intraday_candles(self, interval_minutes: int = 15) -> tuple[IntradayCandle, ...]:
-        """Return today's NIFTY candles from Upstox V3, oldest first."""
+    def fetch_instrument_intraday_candles(
+        self,
+        instrument_key: str,
+        interval_minutes: int = 15,
+    ) -> tuple[IntradayCandle, ...]:
+        """Return today's candles for one Upstox instrument, oldest first."""
         self._validate_candle_interval(interval_minutes)
-        instrument = quote(self.instrument_key, safe="")
+        if not instrument_key.strip():
+            raise ValueError("An Upstox instrument key is required")
+        instrument = quote(instrument_key, safe="")
         payload = self._get_v3(
             f"/historical-candle/intraday/{instrument}/minutes/{interval_minutes}"
         )
         candles = self._parse_candles(payload)
         if not candles:
-            raise UpstoxAPIError("Upstox returned no valid NIFTY intraday candles")
+            raise UpstoxAPIError("Upstox returned no valid intraday candles for the instrument")
         return candles
+
+    def fetch_intraday_candles(self, interval_minutes: int = 15) -> tuple[IntradayCandle, ...]:
+        """Return today's NIFTY candles from Upstox V3, oldest first."""
+        return self.fetch_instrument_intraday_candles(self.instrument_key, interval_minutes)
 
     def fetch_historical_candles(
         self,
@@ -141,15 +151,60 @@ class UpstoxOptionChainClient:
             raise UpstoxAPIError("Upstox returned no valid NIFTY historical candles")
         return candles
 
-    def fetch_raw_chain(self) -> list[dict[str, Any]]:
+    @staticmethod
+    def _expiry_parameter(expiry: str) -> str:
+        value = expiry.strip()
+        if value in {
+            "current_week", "next_week", "far_week",
+            "current_month", "next_month", "far_month",
+        }:
+            return value
+        for pattern in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y"):
+            try:
+                return datetime.strptime(value, pattern).date().isoformat()
+            except ValueError:
+                continue
+        raise ValueError("Option expiry must be an ISO date, NSE date, or Upstox relative expiry")
+
+    def fetch_raw_chain(self, expiry: str | None = None) -> list[dict[str, Any]]:
+        selected_expiry = self._expiry_parameter(expiry or self.expiry)
         payload = self._get(
             "/option/chain",
-            {"instrument_key": self.instrument_key, "expiry_date": self.expiry},
+            {"instrument_key": self.instrument_key, "expiry_date": selected_expiry},
         )
         data = payload.get("data")
         if not isinstance(data, list) or not data:
             raise UpstoxAPIError("Upstox returned an empty option chain")
         return data
+
+    def resolve_atm_option_instruments(
+        self,
+        expiry: str,
+        spot: float,
+    ) -> ATMOptionInstruments:
+        """Resolve the exact live ATM CE/PE keys from the Upstox option chain."""
+        if spot <= 0:
+            raise ValueError("A positive NIFTY spot is required to resolve ATM options")
+        rows = self.fetch_raw_chain(expiry)
+        candidates = [row for row in rows if self._number(row.get("strike_price")) > 0]
+        if not candidates:
+            raise UpstoxAPIError("Upstox option chain contained no valid strikes")
+        selected = min(
+            candidates,
+            key=lambda row: abs(self._number(row.get("strike_price")) - spot),
+        )
+        call = selected.get("call_options") or {}
+        put = selected.get("put_options") or {}
+        ce_key = str(call.get("instrument_key") or "").strip()
+        pe_key = str(put.get("instrument_key") or "").strip()
+        if not ce_key or not pe_key:
+            raise UpstoxAPIError("Upstox ATM row did not contain both CE and PE instrument keys")
+        return ATMOptionInstruments(
+            strike=self._number(selected.get("strike_price")),
+            expiry=str(selected.get("expiry") or self._expiry_parameter(expiry)),
+            ce_instrument_key=ce_key,
+            pe_instrument_key=pe_key,
+        )
 
     @staticmethod
     def _number(value: Any) -> float:

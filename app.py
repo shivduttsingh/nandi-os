@@ -14,7 +14,13 @@ import streamlit.components.v1 as components
 from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
-from nandi_v2.charting import candlestick_chart_html, completed_candles, merge_candles
+from nandi_v2.atm_strategy import ATMConfirmationSignal, assess_atm_confirmation
+from nandi_v2.charting import (
+    candlestick_chart_html,
+    completed_candles,
+    merge_candles,
+    tradingview_advanced_chart_html,
+)
 from nandi_v2.confluence import ConfluenceDecision, apply_confluence_gate, combine_decision
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
 from nandi_v2.engine import decide, option_leg_for, strike_evidence_rows
@@ -47,8 +53,6 @@ from nandi_v2.technical import (
 )
 
 IST = ZoneInfo("Asia/Kolkata")
-TRADINGVIEW_NIFTY_URL = "https://www.tradingview.com/symbols/NSE-NIFTY/"
-
 st.set_page_config(page_title="Nandi", page_icon="N", layout="wide", initial_sidebar_state="expanded")
 st.markdown(
     """
@@ -163,12 +167,18 @@ def init_state() -> None:
         "last_oi_fetch_at": None,
         "last_spot_fetch_at": None,
         "last_upstox_candle_fetch_at": None,
+        "last_atm_option_candle_fetch_at": None,
         "last_technical_history_fetch_at": None,
         "last_data_error": "",
         "upstox_candle_error": "",
+        "atm_option_candle_error": "",
         "technical_history_error": "",
         "spot_points": [],
         "latest_upstox_candles": tuple(),
+        "latest_atm_ce_candles": tuple(),
+        "latest_atm_pe_candles": tuple(),
+        "latest_atm_strike": None,
+        "latest_atm_expiry": "",
         "technical_history_candles": tuple(),
         "technical_history_for_date": "",
         "latest_microstructure_decision": None,
@@ -359,6 +369,38 @@ def refresh_market_data(now: datetime) -> None:
             st.session_state.upstox_candle_error = str(exc)
         finally:
             st.session_state.last_upstox_candle_fetch_at = now
+    oi_snapshot = st.session_state.latest_oi_snapshot
+    fetch_atm_option_candles = bool(token and oi_snapshot) and (
+        force
+        or not st.session_state.latest_atm_ce_candles
+        or not st.session_state.latest_atm_pe_candles
+        or seconds_since(st.session_state.last_atm_option_candle_fetch_at, now)
+        >= st.session_state.candle_refresh_seconds
+    )
+    if fetch_atm_option_candles:
+        try:
+            client = upstox_candle_client(token)
+            spot = float(st.session_state.latest_spot or oi_snapshot.spot)
+            pair = client.resolve_atm_option_instruments(oi_snapshot.expiry, spot)
+            interval = int(st.session_state.stable_interval_minutes)
+            ce_candles = client.fetch_instrument_intraday_candles(
+                pair.ce_instrument_key,
+                interval,
+            )
+            pe_candles = client.fetch_instrument_intraday_candles(
+                pair.pe_instrument_key,
+                interval,
+            )
+            # Replace the pair together so CE and PE never show different ATM contracts.
+            st.session_state.latest_atm_ce_candles = ce_candles
+            st.session_state.latest_atm_pe_candles = pe_candles
+            st.session_state.latest_atm_strike = pair.strike
+            st.session_state.latest_atm_expiry = pair.expiry
+            st.session_state.atm_option_candle_error = ""
+        except (UpstoxAPIError, ValueError) as exc:
+            st.session_state.atm_option_candle_error = str(exc)
+        finally:
+            st.session_state.last_atm_option_candle_fetch_at = now
     today_key = now.date().isoformat()
     history_is_current = (
         st.session_state.technical_history_for_date == today_key
@@ -585,60 +627,106 @@ def live_engine_fragment() -> None:
         st.warning("A refresh failed. Nandi is retaining the last valid NSE snapshot: " + st.session_state.last_data_error)
 
 
-@st.fragment(run_every="2s")
-def live_chart_fragment() -> None:
-    candles = tuple(st.session_state.latest_upstox_candles)
-    points = list(st.session_state.spot_points)
-    spot = st.session_state.latest_spot
-    if candles:
-        interval = int(st.session_state.stable_interval_minutes)
-        completed = completed_candles(candles, now_ist(), interval)
-        structure = "WAIT / RANGE"
-        if len(completed) >= 2:
-            previous, latest = completed[-2], completed[-1]
-            if latest.close > previous.high:
-                structure = "BULLISH BREAKOUT"
-            elif latest.close < previous.low:
-                structure = "BEARISH BREAKDOWN"
-        cols = st.columns(4)
-        live_value = float(spot if spot is not None else candles[-1].close)
-        cols[0].metric("NIFTY live", f"{live_value:,.2f}")
-        cols[1].metric("Stable timeframe", f"{interval} min")
-        cols[2].metric("Completed candles", len(completed))
-        cols[3].metric("Closed-candle structure", structure)
+@st.fragment(run_every="30s")
+def atm_option_charts_fragment() -> None:
+    interval = int(st.session_state.stable_interval_minutes)
+    strike = st.session_state.latest_atm_strike
+    expiry = st.session_state.latest_atm_expiry
+    ce_candles = tuple(st.session_state.latest_atm_ce_candles)
+    pe_candles = tuple(st.session_state.latest_atm_pe_candles)
+    if not configured_upstox_token():
+        st.warning("Add the read-only Upstox token to load live ATM CE and PE premium charts.")
+        return
+    if strike is None or not ce_candles or not pe_candles:
+        st.info("Waiting for the nearest-expiry ATM CE and PE candles from Upstox.")
+        if st.session_state.atm_option_candle_error:
+            st.warning(st.session_state.atm_option_candle_error)
+        return
+
+    st.caption(
+        f"Live pair: NIFTY {strike:.0f} CE + NIFTY {strike:.0f} PE · expiry {expiry} · "
+        f"{interval}-minute premium candles"
+    )
+    ce_column, pe_column = st.columns(2, gap="large")
+    with ce_column:
+        st.metric(
+            f"ATM {strike:.0f} CE",
+            f"₹{ce_candles[-1].close:,.2f}",
+            f"{ce_candles[-1].close - ce_candles[0].open:+.2f} today",
+        )
         components.html(
-            candlestick_chart_html(candles, interval_minutes=interval),
-            height=625,
+            candlestick_chart_html(
+                ce_candles,
+                interval_minutes=interval,
+                title=f"NIFTY {strike:.0f} CE",
+                subtitle=f"Nearest-expiry ATM call premium · {expiry}",
+                evidence_note="Live option-premium evidence from the exact Upstox CE contract; read only.",
+                chart_height=350,
+            ),
+            height=465,
             scrolling=False,
         )
-        last_completed = completed[-1].timestamp.strftime("%I:%M %p") if completed else "Waiting"
-        st.caption(
-            f"Upstox V3 OHLC · last completed candle {last_completed} IST · "
-            "only completed candles enter Nandi's market-structure context."
+    with pe_column:
+        st.metric(
+            f"ATM {strike:.0f} PE",
+            f"₹{pe_candles[-1].close:,.2f}",
+            f"{pe_candles[-1].close - pe_candles[0].open:+.2f} today",
         )
-        if st.session_state.upstox_candle_error:
-            st.warning("Latest Upstox candle refresh failed; the last valid chart remains visible. " + st.session_state.upstox_candle_error)
-        st.link_button("Open full TradingView", TRADINGVIEW_NIFTY_URL)
-        return
-    if spot is not None:
-        cols = st.columns([1, 1, 2])
-        cols[0].metric("NIFTY live", f"{spot:,.2f}")
-        stamp = st.session_state.latest_spot_timestamp
-        cols[1].metric("Samples", len(points))
-        cols[2].caption(f"Last NSE spot update: {stamp.astimezone(IST).strftime('%H:%M:%S')} IST" if stamp else "Waiting for timestamp")
-    if len(points) >= 2:
-        frame = pd.DataFrame(points, columns=["Time", "NIFTY"])
-        frame["Time"] = pd.to_datetime(frame["Time"])
-        st.line_chart(frame.set_index("Time"), height=430)
+        components.html(
+            candlestick_chart_html(
+                pe_candles,
+                interval_minutes=interval,
+                title=f"NIFTY {strike:.0f} PE",
+                subtitle=f"Nearest-expiry ATM put premium · {expiry}",
+                evidence_note="Live option-premium evidence from the exact Upstox PE contract; read only.",
+                chart_height=350,
+            ),
+            height=465,
+            scrolling=False,
+        )
+
+    complete_nifty = completed_candles(
+        st.session_state.latest_upstox_candles,
+        now_ist(),
+        interval,
+    )
+    complete_ce = completed_candles(ce_candles, now_ist(), interval)
+    complete_pe = completed_candles(pe_candles, now_ist(), interval)
+    strategy = assess_atm_confirmation(complete_nifty, complete_ce, complete_pe)
+    strategy_metrics = st.columns(4)
+    strategy_metrics[0].metric("NIFTY + ATM strategy", strategy.signal.value)
+    strategy_metrics[1].metric(
+        "NIFTY move",
+        "—" if strategy.nifty_change_pct is None else f"{strategy.nifty_change_pct:+.2f}%",
+    )
+    strategy_metrics[2].metric(
+        "ATM CE move",
+        "—" if strategy.ce_change_pct is None else f"{strategy.ce_change_pct:+.2f}%",
+    )
+    strategy_metrics[3].metric(
+        "ATM PE move",
+        "—" if strategy.pe_change_pct is None else f"{strategy.pe_change_pct:+.2f}%",
+    )
+    message = (
+        f"{strategy.reason} Agreement strength: {strategy.agreement_score:.1f}/100. "
+        "This score measures chart agreement, not win probability."
+    )
+    if strategy.signal in {ATMConfirmationSignal.CONFIRM_CE, ATMConfirmationSignal.CONFIRM_PE}:
+        st.success(message)
+    elif strategy.signal == ATMConfirmationSignal.WAIT:
+        st.warning(message)
     else:
-        st.info("The fallback NSE chart starts drawing as spot samples arrive.")
-    if configured_upstox_token():
-        st.caption("Waiting for the Upstox 15-minute candle feed. Nandi is temporarily showing NSE spot samples.")
-    else:
-        st.caption("Add the read-only Upstox token to show stable 15-minute candles. Nandi is using its NSE spot fallback.")
-    if st.session_state.upstox_candle_error:
-        st.warning(st.session_state.upstox_candle_error)
-    st.link_button("Open NIFTY on TradingView", TRADINGVIEW_NIFTY_URL)
+        st.info(message)
+    st.caption(
+        "Additional paper-validation strategy: three matching completed candles compare NIFTY direction "
+        "with ATM CE versus ATM PE premium outperformance. It does not change Nandi's final BUY gate "
+        "until its recorded results are validated."
+    )
+    if st.session_state.atm_option_candle_error:
+        st.warning(
+            "Latest ATM refresh failed; the last complete CE/PE pair remains visible. "
+            + st.session_state.atm_option_candle_error
+        )
 
 
 @st.fragment(run_every="2s")
@@ -681,13 +769,19 @@ def evidence_fragment() -> None:
             "OI network refresh": f"{st.session_state.oi_refresh_seconds}s",
             "Spot network refresh": f"{st.session_state.spot_refresh_seconds}s",
             "Upstox candle refresh": f"{st.session_state.candle_refresh_seconds}s" if configured_upstox_token() else "Not configured",
+            "ATM option charts": (
+                f"NIFTY {st.session_state.latest_atm_strike:.0f} CE + PE · {st.session_state.latest_atm_expiry}"
+                if st.session_state.latest_atm_strike is not None else "Waiting"
+            ),
+            "ATM chart error": st.session_state.atm_option_candle_error or "None",
             "Technical candle source": "Upstox V3 historical + intraday" if configured_upstox_token() else "Not configured",
             "Technical completed candles": len(completed_technical_candles(now_ist())),
             "Technical history window": f"{st.session_state.technical_history_days} calendar days",
             "Technical history error": st.session_state.technical_history_error or "None",
             "Stable structure interval": f"{st.session_state.stable_interval_minutes} minutes",
             "Decision recalculation": "1s",
-            "TradingView rendering": "Lightweight Charts with Upstox OHLC; hosted NSE widget not used",
+            "TradingView rendering": "Embedded TradingView Advanced Chart for visual analysis",
+            "Nandi technical evidence": "TradingView Lightweight Charts with read-only Upstox OHLC",
         })
 
 
@@ -878,11 +972,21 @@ def live_page() -> None:
     controls[3].caption("Nandi recalculates every second. NSE requests are rate-limited separately to reduce blocking.")
     chart, panel = st.columns([1.65, 1], gap="large")
     with chart:
-        st.subheader("Live NIFTY — NSE spot")
-        live_chart_fragment()
+        st.subheader("Live NIFTY chart")
+        components.html(
+            tradingview_advanced_chart_html(),
+            height=680,
+            scrolling=False,
+        )
+        st.caption(
+            "Actual NIFTY 50 TradingView chart for visual analysis. Nandi's decisions continue to use "
+            "its separately verified Fundamental + Technical + OI data, not drawings on this chart."
+        )
     with panel:
         st.subheader("Nandi decision")
         live_engine_fragment()
+    st.subheader("Live ATM option charts — CE and PE")
+    atm_option_charts_fragment()
     st.subheader("Three-pillar agreement")
     pillar_summary_fragment()
     st.subheader("Live option-chain evidence")

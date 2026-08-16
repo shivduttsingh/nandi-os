@@ -6,8 +6,9 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 
 - **NSE option chain:** nearest expiry, ATM ±5 strikes only.
 - **NSE NIFTY spot:** used for the live price and as the chart fallback.
-- **Upstox NIFTY candles:** optional read-only V3 historical + intraday OHLCV supplies enough completed 15-minute history for indicator warm-up, current-day market structure and the candlestick chart.
-- **TradingView:** Lightweight Charts™ renders the Upstox candles; the hosted NSE widget is not used as a signal feed.
+- **Upstox candles:** optional read-only V3 historical + intraday OHLCV supplies completed 15-minute NIFTY evidence and the exact nearest-expiry ATM CE/PE premium charts.
+- **TradingView:** the official hosted Advanced Chart embeds the actual `NSE:NIFTY` symbol for interactive visual analysis. It is not used as Nandi's signal feed.
+- **NIFTY + ATM confirmation:** an additional paper-validation strategy compares matching completed NIFTY, ATM CE and ATM PE candles and reports CONFIRM CE, CONFIRM PE, WAIT or UNAVAILABLE. Its agreement score is not a win probability and does not change the final BUY gate before validation.
 - **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
 - **Technical Lab:** exposes 25 indicators grouped into five evidence families so correlated indicators cannot dominate the decision by count alone.
@@ -55,11 +56,12 @@ holidays = ["YYYY-MM-DD"]
 access_token = "YOUR_READ_ONLY_ACCESS_TOKEN"
 ```
 
-The Upstox token is optional, but required for the candlestick chart and completed-candle structure. Do not commit real credentials.
+The Upstox token is optional, but required for technical candles, completed-candle structure and the live ATM CE/PE premium charts. Do not commit real credentials.
 
 ## Application pages
 
-- **Command Center:** Upstox/TradingView-style NIFTY chart, three-pillar agreement, exact CE/PE contract plan, live premium reference, premium/spot risk levels and hold guidance.
+- **Command Center:** actual embedded TradingView NIFTY chart, side-by-side live ATM CE/PE charts, chart-confirmation strategy, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
+- **NIFTY Option Charts:** dedicated actual NIFTY TradingView chart plus auto-rolling nearest-expiry ATM CE and PE premium charts.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
 - **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.
@@ -74,6 +76,6 @@ The included NSE public-site adapter is conservative and rate-limited. The scree
 
 The Nandi score is a setup-quality score, not a guaranteed probability of profit. New fundamental inputs initially come from the authenticated research desk; authorised automated providers can later write to the same auditable factor contract.
 
-See `NANDI_ARCHITECTURE.md` for the complete two-pillar design, accuracy programme and multi-user delivery phases.
+See `NANDI_ARCHITECTURE.md` for the complete three-pillar design, accuracy programme and multi-user delivery phases.
 
 See `NANDI_V2_RELEASE.md` for the deployment checklist.

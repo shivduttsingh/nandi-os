@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 Period = Literal["daily", "weekly", "monthly"]
+MINIMUM_VALIDATION_TRADES = 100
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,10 @@ class CompletedTrade:
     hold_minutes: float
     strike: float | None
     exit_reason: str
+    entry_premium: float | None = None
+    exit_premium: float | None = None
+    premium_points: float | None = None
+    premium_return_pct: float | None = None
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -53,6 +58,13 @@ def completed_trades(events: list[dict[str, Any]]) -> tuple[CompletedTrade, ...]
             continue
         raw = float(spot) - float(entry)
         points = raw if side == "CE" else -raw
+        entry_premium = active.get("Entry premium")
+        exit_premium = event.get("Current premium")
+        premium_points = None
+        premium_return_pct = None
+        if entry_premium is not None and exit_premium is not None and float(entry_premium) > 0:
+            premium_points = round(float(exit_premium) - float(entry_premium), 2)
+            premium_return_pct = round(premium_points / float(entry_premium) * 100.0, 2)
         trades.append(
             CompletedTrade(
                 opened_at=opened,
@@ -64,6 +76,10 @@ def completed_trades(events: list[dict[str, Any]]) -> tuple[CompletedTrade, ...]
                 hold_minutes=round(max(0.0, (stamp - opened).total_seconds() / 60.0), 1),
                 strike=float(active["Strike"]) if active.get("Strike") is not None else None,
                 exit_reason=str(event.get("Reason") or ""),
+                entry_premium=float(entry_premium) if entry_premium is not None else None,
+                exit_premium=float(exit_premium) if exit_premium is not None else None,
+                premium_points=premium_points,
+                premium_return_pct=premium_return_pct,
             )
         )
         active = None
@@ -80,6 +96,10 @@ def trade_rows(trades: tuple[CompletedTrade, ...]) -> list[dict[str, Any]]:
             "Entry NIFTY": trade.entry_spot,
             "Exit NIFTY": trade.exit_spot,
             "NIFTY points": trade.points,
+            "Entry premium": trade.entry_premium,
+            "Exit premium": trade.exit_premium,
+            "Premium points": trade.premium_points,
+            "Premium return %": trade.premium_return_pct,
             "Hold minutes": trade.hold_minutes,
             "Result": "WIN" if trade.points > 0 else "LOSS" if trade.points < 0 else "FLAT",
             "Exit reason": trade.exit_reason,
@@ -116,6 +136,9 @@ def result_rows(trades: tuple[CompletedTrade, ...], period: Period) -> list[dict
         wins = sum(item.points > 0 for item in items)
         losses = sum(item.points < 0 for item in items)
         net = round(sum(item.points for item in items), 2)
+        premium_items = [item for item in items if item.premium_points is not None]
+        premium_wins = sum(float(item.premium_points or 0.0) > 0 for item in premium_items)
+        net_premium = round(sum(float(item.premium_points or 0.0) for item in premium_items), 2)
         rows.append({
             "Period": label,
             "Trades": len(items),
@@ -124,6 +147,10 @@ def result_rows(trades: tuple[CompletedTrade, ...], period: Period) -> list[dict
             "Wins": wins,
             "Losses": losses,
             "Win rate %": round(wins / len(items) * 100.0, 1),
+            "Premium trades": len(premium_items),
+            "Premium wins": premium_wins,
+            "Premium win rate %": round(premium_wins / len(premium_items) * 100.0, 1) if premium_items else None,
+            "Net premium points": net_premium if premium_items else None,
             "Net NIFTY points": net,
             "Average hold minutes": round(sum(item.hold_minutes for item in items) / len(items), 1),
             "Maximum drawdown": _maximum_drawdown([item.points for item in items]),

@@ -112,12 +112,17 @@ class NSEPublicClient:
             change_oi=cls._number(data.get("changeinOpenInterest")),
             volume=cls._number(data.get("totalTradedVolume")),
             iv=cls._number(data.get("impliedVolatility")),
+            bid=cls._number(data.get("bidprice") or data.get("bidPrice")),
+            ask=cls._number(data.get("askPrice") or data.get("askprice")),
         )
 
     @staticmethod
     def _rolling_leg(current: OptionLeg, previous: OptionLeg | None) -> OptionLeg:
         if previous is None:
-            return OptionLeg(current.ltp, 0.0, current.oi, 0.0, current.volume, current.iv)
+            return OptionLeg(
+                current.ltp, 0.0, current.oi, 0.0, current.volume, current.iv,
+                current.bid, current.ask,
+            )
         return OptionLeg(
             ltp=current.ltp,
             change=current.ltp - previous.ltp,
@@ -125,6 +130,8 @@ class NSEPublicClient:
             change_oi=current.oi - previous.oi,
             volume=max(0.0, current.volume - previous.volume),
             iv=current.iv,
+            bid=current.bid,
+            ask=current.ask,
         )
 
     @classmethod

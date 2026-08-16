@@ -22,6 +22,8 @@ class OptionLeg:
     change_oi: float = 0.0
     volume: float = 0.0
     iv: float = 0.0
+    bid: float = 0.0
+    ask: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,14 @@ class TradeLevels:
     support: float | None = None
     resistance: float | None = None
     reward_risk: float | None = None
+    option_ltp: float | None = None
+    option_bid: float | None = None
+    option_ask: float | None = None
+    option_entry: float | None = None
+    option_stop: float | None = None
+    option_target_1: float | None = None
+    option_target_2: float | None = None
+    option_reward_risk: float | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,14 @@ class Decision:
                 "support": self.levels.support,
                 "resistance": self.levels.resistance,
                 "reward_risk": self.levels.reward_risk,
+                "option_ltp": self.levels.option_ltp,
+                "option_bid": self.levels.option_bid,
+                "option_ask": self.levels.option_ask,
+                "option_entry": self.levels.option_entry,
+                "option_stop": self.levels.option_stop,
+                "option_target_1": self.levels.option_target_1,
+                "option_target_2": self.levels.option_target_2,
+                "option_reward_risk": self.levels.option_reward_risk,
             },
             "reasons": list(self.reasons),
             "blockers": list(self.blockers),

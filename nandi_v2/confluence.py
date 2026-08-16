@@ -32,6 +32,8 @@ def combine_decision(
     base: Decision,
     technical: TechnicalAssessment,
     fundamental: FundamentalAssessment,
+    *,
+    minimum_setup_score: float = 75.0,
 ) -> ConfluenceDecision:
     """Use the new pillars as veto/confirmation gates around Nandi's OI engine.
 
@@ -84,6 +86,10 @@ def combine_decision(
     if fundamental.direction == FundamentalBias.NEUTRAL:
         fundamental_score = max(50.0, fundamental.setup_score)
     setup_score = round(base.score * 0.45 + technical_score * 0.35 + fundamental_score * 0.20, 1)
+    if base.action in {DecisionAction.BUY_CE, DecisionAction.BUY_PE} and setup_score < minimum_setup_score:
+        blockers.append(
+            f"Unified setup score is {setup_score:.1f}/100 (minimum {minimum_setup_score:.1f})."
+        )
     blockers = list(dict.fromkeys(blockers))
     reasons = list(dict.fromkeys(reasons))
 

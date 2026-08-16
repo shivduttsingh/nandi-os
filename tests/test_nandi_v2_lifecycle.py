@@ -20,7 +20,17 @@ def decision(action: DecisionAction, score: float = 82.0, stop: float = 24620.0,
         market_state="TEST",
         breakdown=EMPTY,
         opposite_breakdown=EMPTY,
-        levels=TradeLevels(entry=24660.0, stop=stop, target_1=t1, target_2=t2),
+        levels=TradeLevels(
+            entry=24660.0,
+            stop=stop,
+            target_1=t1,
+            target_2=t2,
+            option_ltp=100.0,
+            option_entry=100.0,
+            option_stop=95.0,
+            option_target_1=107.5,
+            option_target_2=112.5,
+        ),
         generated_at=NOW,
         data_timestamp=NOW,
     )
@@ -99,3 +109,42 @@ def test_exit_blocks_immediate_reverse_entry_for_five_minutes() -> None:
     assert blocked.status == TradeStatus.EXIT
     assert "cooldown" in blocked.reason
     assert reopened.status == TradeStatus.ACTIVE_PE
+
+
+def test_option_premium_stop_exits_immediately() -> None:
+    state = advance_trade_state(
+        TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW,
+        option_premium=100.0, expiry="13-Aug-2026",
+    )
+    state = advance_trade_state(
+        state, decision(DecisionAction.BUY_CE), 24660.0, NOW + timedelta(minutes=2),
+        option_premium=94.9,
+    )
+    assert state.status == TradeStatus.EXIT
+    assert "premium stop-loss" in state.reason
+
+
+def test_option_target_one_books_partial_and_protects_premium_entry() -> None:
+    state = advance_trade_state(
+        TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW,
+        option_premium=100.0, expiry="13-Aug-2026",
+    )
+    state = advance_trade_state(
+        state, decision(DecisionAction.BUY_CE), 24660.0, NOW + timedelta(minutes=5),
+        option_premium=108.0,
+    )
+    assert state.status == TradeStatus.PARTIAL
+    assert state.stop_premium == state.entry_premium == 100.0
+
+
+def test_maximum_hold_exits_still_open_trade() -> None:
+    state = advance_trade_state(
+        TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW,
+        option_premium=100.0,
+    )
+    state = advance_trade_state(
+        state, decision(DecisionAction.BUY_CE), 24660.0, NOW + timedelta(minutes=45),
+        option_premium=101.0, maximum_hold_minutes=45,
+    )
+    assert state.status == TradeStatus.EXIT
+    assert "Maximum 45-minute" in state.reason

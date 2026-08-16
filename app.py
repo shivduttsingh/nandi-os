@@ -17,7 +17,7 @@ from nandi_oi.configuration import is_configured_value
 from nandi_v2.charting import candlestick_chart_html, completed_candles, merge_candles
 from nandi_v2.confluence import ConfluenceDecision, apply_confluence_gate, combine_decision
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
-from nandi_v2.engine import decide, strike_evidence_rows
+from nandi_v2.engine import decide, option_leg_for, strike_evidence_rows
 from nandi_v2.fundamentals import (
     FUNDAMENTAL_CATALOGUE,
     FundamentalAssessment,
@@ -31,7 +31,12 @@ from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
 from nandi_v2.nse import NSEDataError, NSEPublicClient
 from nandi_v2.replay import NandiReplay
-from nandi_v2.results import completed_trades, result_rows, trade_rows
+from nandi_v2.results import (
+    MINIMUM_VALIDATION_TRADES,
+    completed_trades,
+    result_rows,
+    trade_rows,
+)
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
 from nandi_v2.technical import (
     NANDI_TOP_10_INDICATORS,
@@ -131,7 +136,21 @@ def restore_trade_state() -> TradeState:
 
 
 def trade_fingerprint(state: TradeState) -> tuple[Any, ...]:
-    return (state.status.value, state.side, state.entry_spot, state.stop_spot, state.target_1, state.target_2, state.selected_strike, state.partial_booked)
+    return (
+        state.status.value,
+        state.side,
+        state.entry_spot,
+        state.stop_spot,
+        state.target_1,
+        state.target_2,
+        state.selected_strike,
+        state.expiry,
+        state.entry_premium,
+        state.stop_premium,
+        state.target_1_premium,
+        state.target_2_premium,
+        state.partial_booked,
+    )
 
 
 def init_state() -> None:
@@ -173,6 +192,7 @@ def init_state() -> None:
         "technical_history_days": 10,
         "technical_history_retry_seconds": 300,
         "minimum_hold_minutes": 15,
+        "maximum_hold_minutes": 45,
         "reversal_cooldown_minutes": 5,
         "trade_state": restored,
         "trade_fingerprint": trade_fingerprint(restored),
@@ -439,13 +459,24 @@ def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Deci
     history_store().append_market_frame(snapshot, context)
     raw = decide(snapshot, context, trade_threshold=float(st.session_state.trade_threshold), prepare_threshold=max(60.0, float(st.session_state.trade_threshold) - 10.0))
     technical, fundamental = pillar_assessments(now)
-    confluence = combine_decision(raw, technical, fundamental)
+    confluence = combine_decision(
+        raw,
+        technical,
+        fundamental,
+        minimum_setup_score=float(st.session_state.trade_threshold),
+    )
     combined = apply_confluence_gate(raw, confluence)
     st.session_state.latest_microstructure_decision = raw
     st.session_state.latest_confluence_decision = confluence
     previous = st.session_state.trade_state
     if gate.allowed:
         confirmed = confirm_decision(combined)
+        execution_side = previous.side if previous.active else confirmed.side
+        execution_strike = (
+            previous.selected_strike if previous.active else confirmed.selected_strike
+        )
+        live_leg = option_leg_for(snapshot, execution_side, execution_strike)
+        option_premium = live_leg.ltp if live_leg and live_leg.ltp > 0 else None
         current = advance_trade_state(
             previous,
             confirmed,
@@ -453,6 +484,9 @@ def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Deci
             now,
             minimum_hold_minutes=float(st.session_state.minimum_hold_minutes),
             reversal_cooldown_minutes=float(st.session_state.reversal_cooldown_minutes),
+            maximum_hold_minutes=float(st.session_state.maximum_hold_minutes),
+            option_premium=option_premium,
+            expiry=snapshot.expiry,
         )
     else:
         confirmed = replace(combined, action=DecisionAction.NO_TRADE, blockers=tuple(dict.fromkeys((gate.reason,) + combined.blockers)))
@@ -495,13 +529,47 @@ def decision_card(decision: Decision, snapshot: OptionChainSnapshot, gate: Any) 
     confluence: ConfluenceDecision | None = st.session_state.latest_confluence_decision
     displayed_action, displayed_class = lifecycle_action(decision, trade)
     levels = decision.levels
+    contract_side = trade.side if trade.active else decision.side
+    contract_strike = trade.selected_strike if trade.active else decision.selected_strike
+    contract_expiry = trade.expiry if trade.active and trade.expiry else snapshot.expiry
+    premium_entry = trade.entry_premium if trade.active else levels.option_entry
+    premium_current = trade.current_premium if trade.active else levels.option_ltp
+    premium_stop = trade.stop_premium if trade.active else levels.option_stop
+    premium_target_1 = trade.target_1_premium if trade.active else levels.option_target_1
+    premium_target_2 = trade.target_2_premium if trade.active else levels.option_target_2
+    spot_entry = trade.entry_spot if trade.active else levels.entry
+    spot_stop = trade.stop_spot if trade.active else levels.stop
+    spot_target_1 = trade.target_1 if trade.active else levels.target_1
+    spot_target_2 = trade.target_2 if trade.active else levels.target_2
+    has_execution_plan = (
+        contract_side in {"CE", "PE"}
+        and contract_strike is not None
+        and premium_entry is not None
+        and (trade.active or decision.action != DecisionAction.NO_TRADE)
+    )
+    if has_execution_plan:
+        if trade.active:
+            displayed_action = f"{contract_strike:.0f} {contract_side} · {displayed_action}"
+        else:
+            displayed_action = (
+                f"{decision.action.value} · {contract_strike:.0f} {contract_side} "
+                f"@ ₹{premium_entry:.2f}"
+            )
+        quote = (
+            f"₹{levels.option_bid:.2f} / ₹{levels.option_ask:.2f}"
+            if not trade.active and levels.option_bid and levels.option_ask
+            else "—"
+        )
+        execution_plan = f'''<div class="label" style="margin-top:.75rem">Option execution plan</div><div class="grid"><div class="cell"><span class="label">Contract</span><b>NIFTY {contract_strike:.0f} {escape(contract_side)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(contract_expiry)}</b></div><div class="cell"><span class="label">Current premium</span><b>₹{fmt(premium_current)}</b></div><div class="cell"><span class="label">Bid / Ask</span><b>{quote}</b></div><div class="cell"><span class="label">Buy near</span><b>₹{fmt(premium_entry)}</b></div><div class="cell"><span class="label">Premium stop · 5%</span><b>₹{fmt(premium_stop)}</b></div><div class="cell"><span class="label">Premium target 1 · 1.5R</span><b>₹{fmt(premium_target_1)}</b></div><div class="cell"><span class="label">Premium target 2 · 2.5R</span><b>₹{fmt(premium_target_2)}</b></div></div>'''
+    else:
+        execution_plan = '<div class="blocker">No executable option contract until Nandi confirms BUY CE or BUY PE.</div>'
     agreement = confluence.agreement if confluence else "Waiting for pillar assessment"
     score_line = (
         f"Confluence {confluence.setup_score:.1f}/100 · OI {confluence.microstructure_score:.1f} · "
         f"Technical {confluence.technical_score:.1f} · Fundamental {confluence.fundamental_score:.1f}"
         if confluence else f"Setup score {decision.score:.1f}/100"
     )
-    return f'''<div class="decision"><div class="label">Stable trade state</div><div class="value {displayed_class}">{escape(displayed_action)}</div><div class="note">{escape(score_line)} · {escape(gate.status.label)}</div><div class="note">{escape(agreement)}</div><div class="grid"><div class="cell"><span class="label">Strike</span><b>{fmt(decision.selected_strike)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(snapshot.expiry)}</b></div><div class="cell"><span class="label">Entry</span><b>{fmt(levels.entry)}</b></div><div class="cell"><span class="label">Stop</span><b>{fmt(levels.stop)}</b></div><div class="cell"><span class="label">Target 1</span><b>{fmt(levels.target_1)}</b></div><div class="cell"><span class="label">Target 2</span><b>{fmt(levels.target_2)}</b></div></div><div style="margin-top:.75rem">{reasons}{blockers}</div><div class="trade"><span class="label">Lifecycle</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.65rem">OI: {snapshot.timestamp.astimezone(IST).strftime('%H:%M:%S')} IST · {escape(snapshot.source)}</div></div>'''
+    return f'''<div class="decision"><div class="label">Stable trade state</div><div class="value {displayed_class}">{escape(displayed_action)}</div><div class="note">{escape(score_line)} · {escape(gate.status.label)}</div><div class="note">{escape(agreement)} · Setup quality is not a guaranteed win probability.</div>{execution_plan}<div class="label" style="margin-top:.75rem">NIFTY confirmation levels</div><div class="grid"><div class="cell"><span class="label">Spot entry</span><b>{fmt(spot_entry)}</b></div><div class="cell"><span class="label">Spot stop</span><b>{fmt(spot_stop)}</b></div><div class="cell"><span class="label">Spot target 1</span><b>{fmt(spot_target_1)}</b></div><div class="cell"><span class="label">Spot target 2</span><b>{fmt(spot_target_2)}</b></div></div><div style="margin-top:.75rem">{reasons}{blockers}</div><div class="trade"><span class="label">Lifecycle · min {st.session_state.minimum_hold_minutes}m / max {st.session_state.maximum_hold_minutes}m</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.65rem">OI: {snapshot.timestamp.astimezone(IST).strftime('%H:%M:%S')} IST · {escape(snapshot.source)} · Confirm the live quote before manual execution.</div></div>'''
 
 
 @st.fragment(run_every="1s")
@@ -863,13 +931,30 @@ def results_page() -> None:
     if not trades:
         st.info("Daily, weekly and monthly results will appear after Nandi records its first completed trade lifecycle.")
         return
-    wins = sum(item.points > 0 for item in trades)
-    metrics = st.columns(5)
+    premium_trades = [item for item in trades if item.premium_points is not None]
+    wins = sum(
+        float(item.premium_points or 0.0) > 0
+        for item in premium_trades
+    ) if premium_trades else sum(item.points > 0 for item in trades)
+    win_denominator = len(premium_trades) if premium_trades else len(trades)
+    metrics = st.columns(6)
     metrics[0].metric("Completed trades", len(trades))
-    metrics[1].metric("Win rate", f"{wins / len(trades) * 100:.1f}%")
-    metrics[2].metric("Net NIFTY points", f"{sum(item.points for item in trades):+.2f}")
-    metrics[3].metric("CE trades", sum(item.side == "CE" for item in trades))
-    metrics[4].metric("PE trades", sum(item.side == "PE" for item in trades))
+    metrics[1].metric("Premium win rate" if premium_trades else "NIFTY win rate", f"{wins / win_denominator * 100:.1f}%")
+    metrics[2].metric("Net premium points", f"{sum(float(item.premium_points or 0.0) for item in premium_trades):+.2f}" if premium_trades else "—")
+    metrics[3].metric("Net NIFTY points", f"{sum(item.points for item in trades):+.2f}")
+    metrics[4].metric("CE trades", sum(item.side == "CE" for item in trades))
+    metrics[5].metric("PE trades", sum(item.side == "PE" for item in trades))
+    if not premium_trades:
+        st.info("Accuracy is UNVALIDATED: no completed trade has both a recorded entry and exit premium yet.")
+    elif len(premium_trades) < MINIMUM_VALIDATION_TRADES:
+        st.warning(
+            f"Accuracy is UNVALIDATED: {len(premium_trades)}/{MINIMUM_VALIDATION_TRADES} "
+            "completed premium trades recorded. Early win rates can be misleading."
+        )
+    elif wins / len(premium_trades) * 100.0 >= 75.0:
+        st.success("The recorded premium-trade sample currently meets the 75% research target; continue monitoring for drift.")
+    else:
+        st.warning("The recorded premium-trade sample is below the 75% research target.")
     daily, weekly, monthly = st.tabs(["Daily", "Weekly", "Monthly"])
     for tab, period in ((daily, "daily"), (weekly, "weekly"), (monthly, "monthly")):
         with tab:
@@ -877,19 +962,42 @@ def results_page() -> None:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     with st.expander("Completed trade ledger"):
         st.dataframe(pd.DataFrame(trade_rows(trades)), use_container_width=True, hide_index=True)
-    st.caption("Results use NIFTY underlying points from persisted ACTIVE-to-EXIT lifecycle events. They do not estimate option-premium P&L.")
+    st.caption("Premium win rate is shown only for trades with recorded entry and exit premiums; older trades remain available as NIFTY-point results. No missing premium is estimated.")
 
 
 def settings_page() -> None:
     header("Settings", "Tune live refresh and setup gates without changing the engine code.")
     left, right = st.columns(2, gap="large")
     with left:
-        st.session_state.trade_threshold = st.slider("Minimum BUY score", 65.0, 90.0, float(st.session_state.trade_threshold), 1.0)
-        st.session_state.email_threshold = st.slider("Minimum email score", 80.0, 95.0, float(st.session_state.email_threshold), 1.0)
+        st.session_state.trade_threshold = st.slider(
+            "Minimum BUY score",
+            75.0,
+            100.0,
+            max(75.0, float(st.session_state.trade_threshold)),
+            1.0,
+        )
+        st.session_state.email_threshold = st.slider(
+            "Minimum email score",
+            80.0,
+            100.0,
+            max(80.0, float(st.session_state.email_threshold)),
+            1.0,
+        )
         st.session_state.confirmation_evaluations = st.slider("Fresh OI snapshots required", 1, 5, int(st.session_state.confirmation_evaluations), 1)
         st.session_state.oi_refresh_seconds = st.slider("NSE OI refresh seconds", 15, 120, int(st.session_state.oi_refresh_seconds), 5)
         st.session_state.spot_refresh_seconds = st.slider("NSE spot refresh seconds", 2, 30, int(st.session_state.spot_refresh_seconds), 1)
         st.session_state.minimum_hold_minutes = st.slider("Minimum stable hold minutes", 5, 30, int(st.session_state.minimum_hold_minutes), 1)
+        maximum_hold_default = max(
+            int(st.session_state.minimum_hold_minutes),
+            int(st.session_state.maximum_hold_minutes),
+        )
+        st.session_state.maximum_hold_minutes = st.slider(
+            "Maximum trade hold minutes",
+            int(st.session_state.minimum_hold_minutes),
+            120,
+            maximum_hold_default,
+            1,
+        )
         st.session_state.reversal_cooldown_minutes = st.slider("Reversal cooldown minutes", 0, 15, int(st.session_state.reversal_cooldown_minutes), 1)
     with right:
         smtp = smtp_settings()
@@ -907,6 +1015,9 @@ def settings_page() -> None:
             "Stable timeframe": f"{st.session_state.stable_interval_minutes} minutes",
             "Forming candle": "Displayed — excluded from completed-candle structure",
             "Unified entry gate": "Fundamental + technical + OI required",
+            "Final BUY threshold": f"{st.session_state.trade_threshold:.0f}/100 unified setup quality",
+            "Option execution": f"Selected-contract NSE quote · {st.session_state.oi_refresh_seconds}s refresh · 5% premium stop · 1.5R / 2.5R targets",
+            "Holding window": f"{st.session_state.minimum_hold_minutes}–{st.session_state.maximum_hold_minutes} minutes unless stop/target exits first",
             "Technical model": "25 indicators grouped into five non-duplicative families",
             "Fundamental model": "Sourced and freshness-gated; unknown inputs block new entries",
         })

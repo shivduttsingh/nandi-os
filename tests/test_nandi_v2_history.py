@@ -21,6 +21,12 @@ def test_trade_lifecycle_state_persists_across_store_instances(tmp_path):
         target_1=24700.0,
         target_2=24750.0,
         selected_strike=24650.0,
+        expiry="13-Aug-2026",
+        entry_premium=100.0,
+        current_premium=102.0,
+        stop_premium=95.0,
+        target_1_premium=107.5,
+        target_2_premium=112.5,
         opened_at=now,
         updated_at=now,
         reason="Confirmed Nandi entry.",
@@ -34,6 +40,10 @@ def test_trade_lifecycle_state_persists_across_store_instances(tmp_path):
     assert restored.entry_spot == 24650.0
     assert restored.stop_spot == 24620.0
     assert restored.target_2 == 24750.0
+    assert restored.expiry == "13-Aug-2026"
+    assert restored.entry_premium == 100.0
+    assert restored.stop_premium == 95.0
+    assert restored.target_2_premium == 112.5
     assert restored.opened_at == now
 
 

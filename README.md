@@ -12,14 +12,15 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
 - **Technical Lab:** exposes 25 indicators grouped into five evidence families so correlated indicators cannot dominate the decision by count alone.
 - **Confluence gate:** the OI engine proposes the side; technical and fundamental pillars may confirm or veto it. Missing, stale, sideways or conflicting pillars block a new trade.
+- **Option execution plan:** every confirmed setup identifies the nearest-expiry ATM CE/PE contract, current NSE quote, conservative ask/LTP entry reference, 5% premium stop and 1.5R/2.5R premium targets. Missing premiums and bid/ask spreads above 3% block BUY. Premium monitoring follows the configured option-chain refresh and is not broker tick data.
 - **Rolling OI:** Nandi compares successive successful NSE snapshots instead of treating exchange day-level COI as short-term movement. The first snapshot is a neutral baseline.
-- **Trade gate:** BUY CE or BUY PE requires score 75+ by default, directional edge, fresh data and no hard blocker.
+- **Trade gate:** BUY CE or BUY PE requires both the OI proposal and final weighted confluence score to reach 75+ by default, plus directional edge, fresh data and no hard blocker.
 - **Confirmation:** default three distinct fresh NSE option-chain snapshots on the same side before BUY.
 - **NSE session gate:** closed/pre-market/weekend/configured-holiday states cannot emit a live BUY.
 - **Email gate:** only confirmed BUY CE / BUY PE setups at score 80+ are eligible for email; successful entry alerts are deduplicated.
-- **Trade lifecycle:** PREPARE -> ACTIVE -> HOLD -> BOOK PARTIAL / TRAIL -> EXIT, with a default 15-minute direction lock and 5-minute reversal cooldown. Stops and targets remain immediate risk exits.
+- **Trade lifecycle:** PREPARE -> ACTIVE -> HOLD -> BOOK PARTIAL / TRAIL -> EXIT, with a default 15-minute minimum hold, 45-minute maximum hold and 5-minute reversal cooldown. Spot or premium stops and targets remain immediate risk exits.
 - **Persistence:** decisions, lifecycle transitions, alerts and captured replay frames are stored in SQLite.
-- **Results:** completed lifecycle events are summarized daily, weekly and monthly in underlying NIFTY points.
+- **Results:** completed lifecycle events are summarized daily, weekly and monthly in recorded option-premium results when available, alongside underlying NIFTY points. Missing premiums are never estimated.
 - **Replay:** stored NSE frames can be deterministically re-run through the V2 engine and the same confirmation/lifecycle logic.
 - **No broker orders:** research and paper-observation only.
 - **No broker fallback:** missing or stale NSE option-chain data produces NO TRADE. Missing Upstox candles fall back to the NSE spot chart and never trigger broker activity.
@@ -58,7 +59,7 @@ The Upstox token is optional, but required for the candlestick chart and complet
 
 ## Application pages
 
-- **Command Center:** Upstox/TradingView-style NIFTY chart, three-pillar agreement, stable CE/PE lifecycle state, entry, stop and targets.
+- **Command Center:** Upstox/TradingView-style NIFTY chart, three-pillar agreement, exact CE/PE contract plan, live premium reference, premium/spot risk levels and hold guidance.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
 - **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.

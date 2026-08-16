@@ -166,10 +166,17 @@ class DecisionHistory:
             "target_1": state.target_1,
             "target_2": state.target_2,
             "selected_strike": state.selected_strike,
+            "expiry": state.expiry,
+            "entry_premium": state.entry_premium,
+            "current_premium": state.current_premium,
+            "stop_premium": state.stop_premium,
+            "target_1_premium": state.target_1_premium,
+            "target_2_premium": state.target_2_premium,
             "opened_at": state.opened_at.isoformat() if state.opened_at else None,
             "updated_at": state.updated_at.isoformat() if state.updated_at else None,
             "partial_booked": state.partial_booked,
             "peak_favourable_spot": state.peak_favourable_spot,
+            "peak_favourable_premium": state.peak_favourable_premium,
             "reason": state.reason,
         }
 
@@ -187,10 +194,17 @@ class DecisionHistory:
             target_1=payload.get("target_1"),
             target_2=payload.get("target_2"),
             selected_strike=payload.get("selected_strike"),
+            expiry=str(payload.get("expiry") or ""),
+            entry_premium=payload.get("entry_premium"),
+            current_premium=payload.get("current_premium"),
+            stop_premium=payload.get("stop_premium"),
+            target_1_premium=payload.get("target_1_premium"),
+            target_2_premium=payload.get("target_2_premium"),
             opened_at=cls._dt(payload.get("opened_at")),
             updated_at=cls._dt(payload.get("updated_at")),
             partial_booked=bool(payload.get("partial_booked", False)),
             peak_favourable_spot=payload.get("peak_favourable_spot"),
+            peak_favourable_premium=payload.get("peak_favourable_premium"),
             reason=str(payload.get("reason") or ""),
         )
 
@@ -227,20 +241,17 @@ class DecisionHistory:
     def recent_trade_events(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT event_at, status, side, spot, score, selected_strike, reason FROM trade_events ORDER BY id DESC LIMIT ?",
+                "SELECT event_at, status, side, spot, score, selected_strike, reason, payload FROM trade_events ORDER BY id DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
-        return [
-            {"Time": r["event_at"], "Status": r["status"], "Side": r["side"], "Spot": r["spot"], "Score": r["score"], "Strike": r["selected_strike"], "Reason": r["reason"]}
-            for r in rows
-        ]
+        return [self._trade_event_row(row) for row in rows]
 
     def trade_events(
         self, start_date: date | None = None, end_date: date | None = None,
         limit: int = 10000,
     ) -> list[dict[str, Any]]:
         """Return lifecycle events chronologically for auditable result summaries."""
-        query = "SELECT event_at, status, side, spot, score, selected_strike, reason FROM trade_events"
+        query = "SELECT event_at, status, side, spot, score, selected_strike, reason, payload FROM trade_events"
         clauses: list[str] = []
         args: list[Any] = []
         if start_date is not None:
@@ -255,14 +266,33 @@ class DecisionHistory:
         args.append(max(1, int(limit)))
         with self._connect() as connection:
             rows = connection.execute(query, tuple(args)).fetchall()
-        return [
-            {"Time": r["event_at"], "Status": r["status"], "Side": r["side"], "Spot": r["spot"], "Score": r["score"], "Strike": r["selected_strike"], "Reason": r["reason"]}
-            for r in rows
-        ]
+        return [self._trade_event_row(row) for row in rows]
+
+    @staticmethod
+    def _trade_event_row(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        return {
+            "Time": row["event_at"],
+            "Status": row["status"],
+            "Side": row["side"],
+            "Strike": row["selected_strike"],
+            "Expiry": payload.get("expiry"),
+            "Entry premium": payload.get("entry_premium"),
+            "Current premium": payload.get("current_premium"),
+            "Premium stop": payload.get("stop_premium"),
+            "Premium target 1": payload.get("target_1_premium"),
+            "Premium target 2": payload.get("target_2_premium"),
+            "Spot": row["spot"],
+            "Score": row["score"],
+            "Reason": row["reason"],
+        }
 
     @staticmethod
     def _leg_payload(leg: OptionLeg) -> dict[str, float]:
-        return {"ltp": leg.ltp, "change": leg.change, "oi": leg.oi, "change_oi": leg.change_oi, "volume": leg.volume, "iv": leg.iv}
+        return {"ltp": leg.ltp, "change": leg.change, "oi": leg.oi, "change_oi": leg.change_oi, "volume": leg.volume, "iv": leg.iv, "bid": leg.bid, "ask": leg.ask}
 
     @classmethod
     def _snapshot_payload(cls, snapshot: OptionChainSnapshot) -> dict[str, Any]:
@@ -292,6 +322,7 @@ class DecisionHistory:
             ltp=float(value.get("ltp") or 0.0), change=float(value.get("change") or 0.0),
             oi=float(value.get("oi") or 0.0), change_oi=float(value.get("change_oi") or 0.0),
             volume=float(value.get("volume") or 0.0), iv=float(value.get("iv") or 0.0),
+            bid=float(value.get("bid") or 0.0), ask=float(value.get("ask") or 0.0),
         )
 
     @classmethod

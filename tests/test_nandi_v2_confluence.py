@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from nandi_v2.confluence import apply_confluence_gate, combine_decision
@@ -92,4 +93,32 @@ def test_confluence_never_invents_a_trade_from_oi_no_trade():
         fundamental(FundamentalBias.BULLISH),
     )
     assert combined.action == DecisionAction.NO_TRADE
+    assert not combined.approved
+
+
+def test_final_unified_score_must_reach_buy_threshold():
+    weak_technical = TechnicalAssessment(
+        TechnicalDirection.BULLISH, 55.0, 55.0, 20.0, 90.0, tuple(), tuple(),
+    )
+    neutral = FundamentalAssessment(
+        FundamentalBias.NEUTRAL, 50.0, 20.0, 20.0, 100.0, tuple(),
+    )
+    raw = replace(base(), score=75.0)
+
+    combined = combine_decision(raw, weak_technical, neutral)
+
+    assert combined.action == DecisionAction.NO_TRADE
+    assert any("Unified setup score" in blocker for blocker in combined.blockers)
+
+
+def test_prepare_state_remains_visible_below_final_buy_threshold():
+    developing = replace(base(DecisionAction.PREPARE_CE), score=68.0)
+
+    combined = combine_decision(
+        developing,
+        technical(TechnicalDirection.BULLISH),
+        fundamental(FundamentalBias.NEUTRAL),
+    )
+
+    assert combined.action == DecisionAction.PREPARE_CE
     assert not combined.approved

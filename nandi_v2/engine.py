@@ -18,6 +18,10 @@ from .models import (
 )
 
 Side = Literal["CE", "PE"]
+OPTION_PREMIUM_STOP_PCT = 5.0
+OPTION_TARGET_1_R = 1.5
+OPTION_TARGET_2_R = 2.5
+MAX_OPTION_SPREAD_PCT = 3.0
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -52,6 +56,19 @@ def nearest_atm(rows: Iterable[StrikeRow], spot: float) -> StrikeRow:
     if not values:
         raise ValueError("Option chain has no strike rows")
     return min(values, key=lambda row: abs(row.strike - spot))
+
+
+def option_leg_for(
+    snapshot: OptionChainSnapshot,
+    side: str,
+    strike: float | None,
+) -> OptionLeg | None:
+    if side not in {"CE", "PE"} or strike is None:
+        return None
+    row = next((item for item in snapshot.rows if item.strike == strike), None)
+    if row is None:
+        return None
+    return row.ce if side == "CE" else row.pe
 
 
 def limited_rows(snapshot: OptionChainSnapshot, wings: int = 5) -> tuple[StrikeRow, ...]:
@@ -287,6 +304,38 @@ def _levels(side: Side, snapshot: OptionChainSnapshot, support: float, resistanc
     return TradeLevels(entry=spot, stop=round(stop, 2), target_1=round(target_1, 2), target_2=round(target_2, 2), support=support, resistance=resistance, reward_risk=round(rr, 2))
 
 
+def _option_execution_levels(
+    levels: TradeLevels,
+    leg: OptionLeg,
+    *,
+    stop_pct: float = OPTION_PREMIUM_STOP_PCT,
+) -> TradeLevels:
+    ltp = max(0.0, float(leg.ltp))
+    bid = max(0.0, float(leg.bid))
+    ask = max(0.0, float(leg.ask))
+    quote_is_valid = ask > 0 and (bid <= 0 or ask >= bid)
+    entry = ask if quote_is_valid else ltp
+    if entry <= 0:
+        return replace(
+            levels,
+            option_ltp=ltp or None,
+            option_bid=bid or None,
+            option_ask=ask or None,
+        )
+    risk = entry * max(0.0, stop_pct) / 100.0
+    return replace(
+        levels,
+        option_ltp=round(ltp, 2) if ltp else None,
+        option_bid=round(bid, 2) if bid else None,
+        option_ask=round(ask, 2) if ask else None,
+        option_entry=round(entry, 2),
+        option_stop=round(max(0.05, entry - risk), 2),
+        option_target_1=round(entry + risk * OPTION_TARGET_1_R, 2),
+        option_target_2=round(entry + risk * OPTION_TARGET_2_R, 2),
+        option_reward_risk=OPTION_TARGET_1_R,
+    )
+
+
 def _risk_score(levels: TradeLevels) -> tuple[float, list[str], list[str]]:
     rr = levels.reward_risk or 0.0
     if rr >= 1.5:
@@ -321,7 +370,12 @@ def _build_side(side: Side, snapshot: OptionChainSnapshot, context: MarketContex
     location, location_reasons, location_blockers = _location_score(side, snapshot.spot, support, resistance, step)
     momentum, momentum_reasons = _momentum_score(side, context)
     volume, volume_reasons = _volume_score(side, rows, snapshot.spot)
-    levels = _levels(side, snapshot, support, resistance, step)
+    selected = nearest_atm(rows, snapshot.spot)
+    leg = selected.ce if side == "CE" else selected.pe
+    levels = _option_execution_levels(
+        _levels(side, snapshot, support, resistance, step),
+        leg,
+    )
     risk, risk_reasons, risk_blockers = _risk_score(levels)
     freshness, freshness_reasons = _freshness_score(snapshot, context)
     breakdown = ScoreBreakdown(market_structure=structure, oi_positioning=oi, premium_confirmation=premium, location=location, momentum=momentum, volume=volume, risk_reward=risk, freshness=freshness)
@@ -333,6 +387,15 @@ def _build_side(side: Side, snapshot: OptionChainSnapshot, context: MarketContex
         reasons.extend(freshness_reasons)
     if premium < 5:
         blockers.append(f"{side} premium is not confirming the move")
+    if levels.option_entry is None:
+        blockers.append(f"{side} option premium is unavailable for an executable entry plan")
+    if leg.bid > 0 and leg.ask >= leg.bid:
+        midpoint = (leg.bid + leg.ask) / 2.0
+        spread_pct = (leg.ask - leg.bid) / midpoint * 100.0 if midpoint else 0.0
+        if spread_pct > MAX_OPTION_SPREAD_PCT:
+            blockers.append(
+                f"{side} option bid/ask spread is {spread_pct:.1f}% (maximum {MAX_OPTION_SPREAD_PCT:.1f}%)"
+            )
     return breakdown, levels, reasons, blockers
 
 

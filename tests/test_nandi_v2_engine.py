@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from nandi_v2.engine import decide, option_activity, strike_evidence_rows
@@ -36,6 +37,10 @@ def test_bullish_setup_returns_buy_ce() -> None:
     assert decision.action == DecisionAction.BUY_CE
     assert decision.ce_score >= 75
     assert decision.levels.stop < snapshot.spot < decision.levels.target_1
+    assert decision.levels.option_entry == 55.0
+    assert decision.levels.option_stop == 52.25
+    assert decision.levels.option_target_1 == 59.12
+    assert decision.levels.option_target_2 == 61.88
 
 
 def test_bearish_setup_returns_buy_pe() -> None:
@@ -60,3 +65,25 @@ def test_evidence_table_is_atm_plus_minus_five() -> None:
     rows = strike_evidence_rows(snapshot)
     assert len(rows) == 11
     assert sum(1 for row in rows if row["ATM"] == "ATM") == 1
+
+
+def test_option_entry_prefers_ask_and_wide_spread_blocks_buy() -> None:
+    snapshot, context = _snapshot("bullish")
+    atm = min(snapshot.rows, key=lambda row: abs(row.strike - snapshot.spot)).strike
+    tight_rows = tuple(
+        StrikeRow(row.strike, replace(row.ce, bid=54.5, ask=55.5), row.pe)
+        if row.strike == atm else row
+        for row in snapshot.rows
+    )
+    tight = decide(replace(snapshot, rows=tight_rows), context)
+    assert tight.action == DecisionAction.BUY_CE
+    assert tight.levels.option_entry == 55.5
+
+    wide_rows = tuple(
+        StrikeRow(row.strike, replace(row.ce, bid=50.0, ask=60.0), row.pe)
+        if row.strike == atm else row
+        for row in snapshot.rows
+    )
+    wide = decide(replace(snapshot, rows=wide_rows), context)
+    assert wide.action != DecisionAction.BUY_CE
+    assert any("spread" in blocker for blocker in wide.blockers)

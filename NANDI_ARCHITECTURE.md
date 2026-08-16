@@ -8,7 +8,7 @@ Nandi is being built as an explainable NIFTY trading-research system for Shiv an
 2. **Technical Lab** — 25 transparent indicators grouped into trend, momentum, volatility, structure and participation families.
 3. **OI & Execution** — the existing NSE ATM ±5 option-chain engine, premium confirmation, location, liquidity, reward-risk, freshness and session gates.
 4. **Confluence Gate** — approves only the side proposed by the OI engine when the required pillars agree. It never creates or reverses a trade by itself.
-5. **Risk Lifecycle** — confirmation, entry, immediate invalidation/targets, minimum hold, reversal cooldown, persistence and results.
+5. **Risk Lifecycle** — confirmation, frozen option-premium and NIFTY levels, immediate invalidation/targets, minimum/maximum hold, reversal cooldown, persistence and results.
 
 ## Live decision rule
 
@@ -30,6 +30,8 @@ New entries are blocked when:
 - NSE data/session/freshness or existing risk gates fail.
 
 Fresh neutral fundamentals may allow an otherwise aligned technical + OI setup, because neutral evidence is not the same as missing evidence.
+
+Both the OI proposal and final weighted confluence score must meet the configured BUY threshold. For an approved side, Nandi selects the nearest-expiry ATM contract and builds a frozen option-premium plan from the current NSE quote: ask price when the order book is valid, otherwise LTP, a 5% premium stop, 1.5R first target and 2.5R second target. Missing premiums or a bid/ask spread above 3% block BUY. These are transparent research rules, not a promised win rate or guaranteed executable fill. Recorded entry/exit premiums feed a separate premium win-rate result; missing values are not estimated.
 
 ## Technical design
 

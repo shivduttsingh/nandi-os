@@ -45,6 +45,7 @@ def test_trade_event_is_deduplicated(tmp_path):
     assert store.append_trade_event(state, spot=24620.0)
     assert not store.append_trade_event(state, spot=24620.0)
     assert len(store.recent_trade_events()) == 1
+    assert store.trade_events()[0]["Status"] == TradeStatus.PREPARE_PE.value
 
 
 def test_market_frames_round_trip_for_replay(tmp_path):

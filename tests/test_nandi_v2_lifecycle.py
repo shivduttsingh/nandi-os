@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, ScoreBreakdown, TradeLevels
@@ -61,8 +61,41 @@ def test_stop_exits_trade() -> None:
     assert "stop-loss" in state.reason
 
 
-def test_opposite_signal_exits_trade() -> None:
+def test_opposite_signal_cannot_flip_trade_during_minimum_hold() -> None:
     state = advance_trade_state(TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW)
     state = advance_trade_state(state, decision(DecisionAction.BUY_PE, stop=24700.0, t1=24600.0, t2=24550.0), 24655.0, NOW)
+    assert state.status == TradeStatus.HOLD
+    assert "warning only" in state.reason
+
+
+def test_opposite_signal_exits_after_minimum_hold() -> None:
+    state = advance_trade_state(TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW)
+    state = advance_trade_state(
+        state,
+        decision(DecisionAction.BUY_PE, stop=24700.0, t1=24600.0, t2=24550.0),
+        24655.0,
+        NOW + timedelta(minutes=15),
+    )
     assert state.status == TradeStatus.EXIT
-    assert "Opposite-side" in state.reason
+    assert "minimum hold" in state.reason
+
+
+def test_exit_blocks_immediate_reverse_entry_for_five_minutes() -> None:
+    state = advance_trade_state(TradeState(), decision(DecisionAction.BUY_CE), 24660.0, NOW)
+    state = advance_trade_state(state, decision(DecisionAction.BUY_CE), 24615.0, NOW + timedelta(minutes=2))
+    blocked = advance_trade_state(
+        state,
+        decision(DecisionAction.BUY_PE, stop=24700.0, t1=24600.0, t2=24550.0),
+        24610.0,
+        NOW + timedelta(minutes=3),
+    )
+    reopened = advance_trade_state(
+        blocked,
+        decision(DecisionAction.BUY_PE, stop=24700.0, t1=24600.0, t2=24550.0),
+        24610.0,
+        NOW + timedelta(minutes=7),
+    )
+
+    assert blocked.status == TradeStatus.EXIT
+    assert "cooldown" in blocked.reason
+    assert reopened.status == TradeStatus.ACTIVE_PE

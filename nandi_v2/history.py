@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +212,31 @@ class DecisionHistory:
                 "SELECT event_at, status, side, spot, score, selected_strike, reason FROM trade_events ORDER BY id DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
+        return [
+            {"Time": r["event_at"], "Status": r["status"], "Side": r["side"], "Spot": r["spot"], "Score": r["score"], "Strike": r["selected_strike"], "Reason": r["reason"]}
+            for r in rows
+        ]
+
+    def trade_events(
+        self, start_date: date | None = None, end_date: date | None = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """Return lifecycle events chronologically for auditable result summaries."""
+        query = "SELECT event_at, status, side, spot, score, selected_strike, reason FROM trade_events"
+        clauses: list[str] = []
+        args: list[Any] = []
+        if start_date is not None:
+            clauses.append("event_at >= ?")
+            args.append(start_date.isoformat())
+        if end_date is not None:
+            clauses.append("event_at < ?")
+            args.append((end_date + timedelta(days=1)).isoformat())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY event_at ASC LIMIT ?"
+        args.append(max(1, int(limit)))
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(args)).fetchall()
         return [
             {"Time": r["event_at"], "Status": r["status"], "Side": r["side"], "Spot": r["spot"], "Score": r["score"], "Strike": r["selected_strike"], "Reason": r["reason"]}
             for r in rows

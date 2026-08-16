@@ -43,6 +43,8 @@ The Technical Lab exposes exactly 25 readings:
 
 Indicators vote within their family first. The five family outputs then form the technical consensus. This prevents a large group of correlated trend indicators from overpowering other types of evidence. Warm-up and unavailable-volume readings abstain rather than becoming neutral or guessed votes.
 
+Upstox V3 supplies raw historical and current-day candles; Nandi calculates the indicators locally so every value is reproducible. A rolling ten-calendar-day history window prevents long-lookback indicators from remaining in warm-up after the opening bell. The focused Nandi Top 10 view spans trend, momentum, volatility and structure, while the decision gate still uses all 25 through family-balanced voting. The Top 10 is a product selection, not an exchange-published popularity ranking.
+
 ## Fundamental design
 
 The current desk accepts an authenticated, sourced snapshot and stores every update in SQLite. Each factor contains:

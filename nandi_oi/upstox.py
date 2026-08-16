@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -69,14 +69,13 @@ class UpstoxOptionChainClient:
     def _get_v3(self, path: str) -> dict[str, Any]:
         return self._request_json(f"{self.BASE_URL_V3}{path}")
 
-    def fetch_intraday_candles(self, interval_minutes: int = 15) -> tuple[IntradayCandle, ...]:
-        """Return today's NIFTY candles from Upstox V3, oldest first."""
+    @staticmethod
+    def _validate_candle_interval(interval_minutes: int) -> None:
         if not 1 <= interval_minutes <= 300:
             raise ValueError("Upstox minute interval must be between 1 and 300")
-        instrument = quote(self.instrument_key, safe="")
-        payload = self._get_v3(
-            f"/historical-candle/intraday/{instrument}/minutes/{interval_minutes}"
-        )
+
+    @classmethod
+    def _parse_candles(cls, payload: dict[str, Any]) -> tuple[IntradayCandle, ...]:
         rows = (payload.get("data") or {}).get("candles") or []
         candles: list[IntradayCandle] = []
         for row in rows:
@@ -98,13 +97,49 @@ class UpstoxOptionChainClient:
                     high=high,
                     low=low,
                     close=closed,
-                    volume=self._number(row[5]) if len(row) > 5 else 0.0,
-                    open_interest=self._number(row[6]) if len(row) > 6 else 0.0,
+                    volume=cls._number(row[5]) if len(row) > 5 else 0.0,
+                    open_interest=cls._number(row[6]) if len(row) > 6 else 0.0,
                 )
             )
+        return tuple(sorted(candles, key=lambda candle: candle.timestamp))
+
+    def fetch_intraday_candles(self, interval_minutes: int = 15) -> tuple[IntradayCandle, ...]:
+        """Return today's NIFTY candles from Upstox V3, oldest first."""
+        self._validate_candle_interval(interval_minutes)
+        instrument = quote(self.instrument_key, safe="")
+        payload = self._get_v3(
+            f"/historical-candle/intraday/{instrument}/minutes/{interval_minutes}"
+        )
+        candles = self._parse_candles(payload)
         if not candles:
             raise UpstoxAPIError("Upstox returned no valid NIFTY intraday candles")
-        return tuple(sorted(candles, key=lambda candle: candle.timestamp))
+        return candles
+
+    def fetch_historical_candles(
+        self,
+        from_date: date,
+        to_date: date,
+        interval_minutes: int = 15,
+    ) -> tuple[IntradayCandle, ...]:
+        """Return a bounded Upstox V3 history window, oldest first."""
+        self._validate_candle_interval(interval_minutes)
+        if from_date > to_date:
+            raise ValueError("Historical candle from_date must be on or before to_date")
+        span_days = (to_date - from_date).days + 1
+        maximum_days = 31 if interval_minutes <= 15 else 92
+        if span_days > maximum_days:
+            raise ValueError(
+                f"Upstox allows at most {maximum_days} calendar days for this minute interval"
+            )
+        instrument = quote(self.instrument_key, safe="")
+        payload = self._get_v3(
+            f"/historical-candle/{instrument}/minutes/{interval_minutes}/"
+            f"{to_date.isoformat()}/{from_date.isoformat()}"
+        )
+        candles = self._parse_candles(payload)
+        if not candles:
+            raise UpstoxAPIError("Upstox returned no valid NIFTY historical candles")
+        return candles
 
     def fetch_raw_chain(self) -> list[dict[str, Any]]:
         payload = self._get(

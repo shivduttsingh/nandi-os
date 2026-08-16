@@ -6,7 +6,7 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 
 - **NSE option chain:** nearest expiry, ATM ±5 strikes only.
 - **NSE NIFTY spot:** used for the live price and as the chart fallback.
-- **Upstox NIFTY candles:** optional read-only V3 OHLC data supplies completed 15-minute market structure and the candlestick chart.
+- **Upstox NIFTY candles:** optional read-only V3 historical + intraday OHLCV supplies enough completed 15-minute history for indicator warm-up, current-day market structure and the candlestick chart.
 - **TradingView:** Lightweight Charts™ renders the Upstox candles; the hosted NSE widget is not used as a signal feed.
 - **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
@@ -60,7 +60,7 @@ The Upstox token is optional, but required for the candlestick chart and complet
 
 - **Command Center:** Upstox/TradingView-style NIFTY chart, three-pillar agreement, stable CE/PE lifecycle state, entry, stop and targets.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
-- **Technical Lab:** family consensus and all 25 individual indicator calculations.
+- **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.
 - **History:** decision history and persisted lifecycle transitions.
 - **Replay:** deterministic replay of NSE frames captured by Nandi.

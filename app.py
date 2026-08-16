@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
-from nandi_v2.charting import candlestick_chart_html, completed_candles
+from nandi_v2.charting import candlestick_chart_html, completed_candles, merge_candles
 from nandi_v2.confluence import ConfluenceDecision, apply_confluence_gate, combine_decision
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
 from nandi_v2.engine import decide, strike_evidence_rows
@@ -34,6 +34,7 @@ from nandi_v2.replay import NandiReplay
 from nandi_v2.results import completed_trades, result_rows, trade_rows
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
 from nandi_v2.technical import (
+    NANDI_TOP_10_INDICATORS,
     TechnicalAssessment,
     TechnicalDirection,
     assess_technicals,
@@ -143,10 +144,14 @@ def init_state() -> None:
         "last_oi_fetch_at": None,
         "last_spot_fetch_at": None,
         "last_upstox_candle_fetch_at": None,
+        "last_technical_history_fetch_at": None,
         "last_data_error": "",
         "upstox_candle_error": "",
+        "technical_history_error": "",
         "spot_points": [],
         "latest_upstox_candles": tuple(),
+        "technical_history_candles": tuple(),
+        "technical_history_for_date": "",
         "latest_microstructure_decision": None,
         "latest_confirmed_decision": None,
         "latest_technical_assessment": None,
@@ -165,6 +170,8 @@ def init_state() -> None:
         "confirmation_evaluations": 3,
         "stable_interval_minutes": 15,
         "candle_refresh_seconds": 30,
+        "technical_history_days": 10,
+        "technical_history_retry_seconds": 300,
         "minimum_hold_minutes": 15,
         "reversal_cooldown_minutes": 5,
         "trade_state": restored,
@@ -265,8 +272,23 @@ def completed_structure_candles(now: datetime) -> tuple[Any, ...]:
     )
 
 
+def technical_candles() -> tuple[Any, ...]:
+    return merge_candles(
+        st.session_state.technical_history_candles,
+        st.session_state.latest_upstox_candles,
+    )
+
+
+def completed_technical_candles(now: datetime) -> tuple[Any, ...]:
+    return completed_candles(
+        technical_candles(),
+        now,
+        int(st.session_state.stable_interval_minutes),
+    )
+
+
 def pillar_assessments(now: datetime) -> tuple[TechnicalAssessment, FundamentalAssessment]:
-    technical = assess_technicals(completed_structure_candles(now))
+    technical = assess_technicals(completed_technical_candles(now))
     fundamental = assess_fundamentals(history_store().latest_fundamental_factors(), now)
     st.session_state.latest_technical_assessment = technical
     st.session_state.latest_fundamental_assessment = fundamental
@@ -317,6 +339,38 @@ def refresh_market_data(now: datetime) -> None:
             st.session_state.upstox_candle_error = str(exc)
         finally:
             st.session_state.last_upstox_candle_fetch_at = now
+    today_key = now.date().isoformat()
+    history_is_current = (
+        st.session_state.technical_history_for_date == today_key
+        and bool(st.session_state.technical_history_candles)
+    )
+    fetch_history = bool(token) and (
+        force
+        or (
+            not history_is_current
+            and seconds_since(st.session_state.last_technical_history_fetch_at, now)
+            >= st.session_state.technical_history_retry_seconds
+        )
+    )
+    if fetch_history:
+        try:
+            to_date = now.date() - timedelta(days=1)
+            from_date = to_date - timedelta(
+                days=int(st.session_state.technical_history_days) - 1
+            )
+            st.session_state.technical_history_candles = upstox_candle_client(
+                token
+            ).fetch_historical_candles(
+                from_date,
+                to_date,
+                int(st.session_state.stable_interval_minutes),
+            )
+            st.session_state.technical_history_for_date = today_key
+            st.session_state.technical_history_error = ""
+        except (UpstoxAPIError, ValueError) as exc:
+            st.session_state.technical_history_error = str(exc)
+        finally:
+            st.session_state.last_technical_history_fetch_at = now
     st.session_state.last_data_error = " | ".join(dict.fromkeys(errors))
 
 
@@ -559,6 +613,10 @@ def evidence_fragment() -> None:
             "OI network refresh": f"{st.session_state.oi_refresh_seconds}s",
             "Spot network refresh": f"{st.session_state.spot_refresh_seconds}s",
             "Upstox candle refresh": f"{st.session_state.candle_refresh_seconds}s" if configured_upstox_token() else "Not configured",
+            "Technical candle source": "Upstox V3 historical + intraday" if configured_upstox_token() else "Not configured",
+            "Technical completed candles": len(completed_technical_candles(now_ist())),
+            "Technical history window": f"{st.session_state.technical_history_days} calendar days",
+            "Technical history error": st.session_state.technical_history_error or "None",
             "Stable structure interval": f"{st.session_state.stable_interval_minutes} minutes",
             "Decision recalculation": "1s",
             "TradingView rendering": "Lightweight Charts with Upstox OHLC; hosted NSE widget not used",
@@ -688,31 +746,57 @@ def fundamental_desk_page() -> None:
 def technical_lab_page() -> None:
     now = now_ist()
     refresh_market_data(now)
-    assessment = assess_technicals(completed_structure_candles(now))
+    completed = completed_technical_candles(now)
+    assessment = assess_technicals(completed)
     st.session_state.latest_technical_assessment = assessment
     header(
         "Technical Lab",
         "Twenty-five transparent indicators grouped into trend, momentum, volatility, structure and participation families.",
     )
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("Technical bias", assessment.direction.value)
     metrics[1].metric("Setup score", f"{assessment.setup_score:.1f}/100")
     metrics[2].metric("Bullish", f"{assessment.bullish_score:.1f}")
     metrics[3].metric("Bearish", f"{assessment.bearish_score:.1f}")
     metrics[4].metric("Coverage", f"{assessment.coverage:.0f}%")
-    family, indicators = st.tabs(["Family consensus", "All 25 indicators"])
+    metrics[5].metric("Accuracy status", "UNVALIDATED")
+    if completed:
+        st.caption(
+            f"Source: Upstox V3 historical + intraday OHLCV · {len(completed)} completed "
+            f"{st.session_state.stable_interval_minutes}-minute candles · "
+            f"{completed[0].timestamp:%d %b %H:%M} to "
+            f"{completed[-1].timestamp:%d %b %H:%M} IST"
+        )
+    elif configured_upstox_token():
+        st.info("Waiting for valid Upstox historical and intraday candles.")
+    else:
+        st.info("Configure the read-only Upstox token to calculate technical indicators.")
+    if st.session_state.technical_history_error:
+        st.warning("Historical candle refresh failed: " + st.session_state.technical_history_error)
+    family, core, indicators = st.tabs(
+        ["Family consensus", "Nandi Top 10", "All 25 indicators"]
+    )
     with family:
         family_frame = pd.DataFrame(assessment.family_rows)
         st.dataframe(family_frame, use_container_width=True, hide_index=True)
         if not family_frame.empty:
             st.bar_chart(family_frame.set_index("Family")[["Bullish", "Bearish", "Neutral"]])
+    with core:
+        rows = technical_rows(assessment)
+        core_rows = [row for row in rows if row["Indicator"] in NANDI_TOP_10_INDICATORS]
+        st.dataframe(pd.DataFrame(core_rows), use_container_width=True, hide_index=True, height=480)
+        st.caption(
+            "The Top 10 is Nandi's compact cross-family operator set; it is not an official NSE popularity ranking. "
+            "The confluence gate continues to use family-balanced evidence from all 25 indicators."
+        )
     with indicators:
         st.dataframe(pd.DataFrame(technical_rows(assessment)), use_container_width=True, hide_index=True, height=720)
     if assessment.blockers:
         st.warning(" | ".join(assessment.blockers))
     st.caption(
         "Indicators vote inside families first, so ten correlated trend indicators cannot overwhelm every other evidence family. "
-        "Unavailable volume or warm-up indicators abstain instead of becoming guessed votes."
+        "Unavailable volume or warm-up indicators abstain instead of becoming guessed votes. "
+        "The 70–80% win-rate target remains unvalidated until walk-forward and paper-trade samples prove it."
     )
 
 

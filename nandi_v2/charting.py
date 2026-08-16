@@ -11,6 +11,15 @@ from nandi_oi.models import IntradayCandle
 IST = ZoneInfo("Asia/Kolkata")
 
 
+def merge_candles(*groups: Iterable[IntradayCandle]) -> tuple[IntradayCandle, ...]:
+    """Merge candle groups by timestamp; later groups replace earlier duplicates."""
+    merged: dict[datetime, IntradayCandle] = {}
+    for group in groups:
+        for candle in group:
+            merged[candle.timestamp] = candle
+    return tuple(merged[timestamp] for timestamp in sorted(merged))
+
+
 def completed_candles(
     candles: Iterable[IntradayCandle], observed_at: datetime, interval_minutes: int,
 ) -> tuple[IntradayCandle, ...]:

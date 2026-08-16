@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from nandi_oi.upstox import UpstoxAPIError, UpstoxOptionChainClient
 
@@ -83,3 +83,38 @@ def test_intraday_candles_ignore_bad_rows_and_reject_bad_interval():
         assert "between 1 and 300" in str(exc)
     else:
         raise AssertionError("Expected an invalid candle interval to be rejected")
+
+
+def test_historical_candles_use_v3_date_path_and_sort_oldest_first():
+    class CandleClient(UpstoxOptionChainClient):
+        def _get_v3(self, path):
+            assert path == (
+                "/historical-candle/NSE_INDEX%7CNifty%2050/minutes/15/"
+                "2026-08-11/2026-08-02"
+            )
+            return {"status": "success", "data": {"candles": [
+                ["2026-08-11T09:30:00+05:30", 25020, 25040, 25010, 25035, 0, 0],
+                ["2026-08-03T09:15:00+05:30", 24900, 24925, 24890, 24920, 0, 0],
+            ]}}
+
+    candles = CandleClient(access_token="test").fetch_historical_candles(
+        date(2026, 8, 2), date(2026, 8, 11), 15,
+    )
+
+    assert [item.timestamp for item in candles] == [
+        datetime(2026, 8, 3, 9, 15), datetime(2026, 8, 11, 9, 30),
+    ]
+
+
+def test_historical_candles_reject_reversed_or_oversized_ranges():
+    client = UpstoxOptionChainClient(access_token="test")
+    for from_date, to_date in (
+        (date(2026, 8, 12), date(2026, 8, 11)),
+        (date(2026, 7, 1), date(2026, 8, 11)),
+    ):
+        try:
+            client.fetch_historical_candles(from_date, to_date, 15)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Expected an invalid historical range to be rejected")

@@ -9,6 +9,22 @@ from typing import Iterable
 from nandi_oi.models import IntradayCandle
 
 
+# A compact operator view spanning distinct evidence families. This is a Nandi
+# product selection, not a claim that an exchange publishes an indicator-usage ranking.
+NANDI_TOP_10_INDICATORS = (
+    "Close vs SMA 20",
+    "MACD histogram",
+    "Supertrend 10/3",
+    "DMI / ADX 14",
+    "RSI 14",
+    "Stochastic %K 14",
+    "Bollinger position 20/2",
+    "Donchian breakout 20",
+    "ATR expansion 14",
+    "Pivot position",
+)
+
+
 class TechnicalDirection(str, Enum):
     BULLISH = "BULLISH"
     BEARISH = "BEARISH"
@@ -340,21 +356,28 @@ def indicator_votes(candles: Iterable[IntradayCandle]) -> tuple[IndicatorVote, .
         pivot = (prior.high + prior.low + prior.close) / 3.0
         votes.append(_compare("Pivot position", "Structure", close, pivot, "Close compared with the prior-bar pivot", price_scale, 2, count))
 
+    session_bars = [item for item in bars if item.timestamp.date() == latest.timestamp.date()]
+    session_volumes = [max(0.0, float(item.volume)) for item in session_bars]
+    session_volume = sum(session_volumes)
+    if session_volume <= 0:
+        votes.append(_vote("Session VWAP", "Participation", TechnicalDirection.UNAVAILABLE, "NO INDEX VOLUME", "The latest NIFTY session has no usable traded volume.", 0.0))
+    else:
+        typical_prices = [(item.high + item.low + item.close) / 3.0 for item in session_bars]
+        vwap = sum(price * volume for price, volume in zip(typical_prices, session_volumes)) / session_volume
+        votes.append(_compare("Session VWAP", "Participation", close, vwap, "Close compared with session VWAP", price_scale, 1, count))
+
     total_volume = sum(volumes)
     if total_volume <= 0:
-        votes.append(_vote("Session VWAP", "Participation", TechnicalDirection.UNAVAILABLE, "NO INDEX VOLUME", "The NIFTY index candle feed has no usable traded volume.", 0.0))
         votes.append(_vote("OBV slope", "Participation", TechnicalDirection.UNAVAILABLE, "NO INDEX VOLUME", "The NIFTY index candle feed has no usable traded volume.", 0.0))
     else:
-        typical_prices = [(item.high + item.low + item.close) / 3.0 for item in bars]
-        vwap = sum(price * volume for price, volume in zip(typical_prices, volumes)) / total_volume
-        votes.append(_compare("Session VWAP", "Participation", close, vwap, "Close compared with session VWAP", price_scale, 1, count))
         obv = [0.0]
         for prior_close, current_close, volume in zip(closes[:-1], closes[1:], volumes[1:]):
             obv.append(obv[-1] + volume if current_close > prior_close else obv[-1] - volume if current_close < prior_close else obv[-1])
         lookback = min(5, len(obv) - 1)
         slope = obv[-1] - obv[-1 - lookback] if lookback else 0.0
+        recent_volume = sum(volumes[-max(lookback, 1):])
         obv_direction = TechnicalDirection.BULLISH if slope > 0 else TechnicalDirection.BEARISH if slope < 0 else TechnicalDirection.NEUTRAL
-        votes.append(_vote("OBV slope", "Participation", obv_direction, slope, "Five-bar On-Balance Volume slope.", min(1.0, abs(slope) / max(total_volume * 0.15, 1e-9))))
+        votes.append(_vote("OBV slope", "Participation", obv_direction, slope, "Five-bar On-Balance Volume slope.", min(1.0, abs(slope) / max(recent_volume, 1e-9))))
 
     return tuple(votes)
 

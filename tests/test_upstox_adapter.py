@@ -85,6 +85,46 @@ def test_intraday_candles_ignore_bad_rows_and_reject_bad_interval():
         raise AssertionError("Expected an invalid candle interval to be rejected")
 
 
+def test_atm_instruments_are_resolved_from_exact_expiry_and_nearest_strike():
+    class ChainClient(UpstoxOptionChainClient):
+        def _get(self, path, params):
+            assert path == "/option/chain"
+            assert params["expiry_date"] == "2026-08-20"
+            data = [
+                row(25000, 25062, 1000, 100, 1000, 90),
+                row(25050, 25062, 1000, 80, 1000, 110),
+                row(25100, 25062, 1000, 60, 1000, 130),
+            ]
+            for item in data:
+                item["expiry"] = "2026-08-20"
+            return {"status": "success", "data": data}
+
+    pair = ChainClient(access_token="test").resolve_atm_option_instruments(
+        "20-Aug-2026", 25062,
+    )
+
+    assert pair.strike == 25050
+    assert pair.expiry == "2026-08-20"
+    assert pair.ce_instrument_key == "CE-25050"
+    assert pair.pe_instrument_key == "PE-25050"
+
+
+def test_option_instrument_candles_use_the_exact_contract_key():
+    class OptionCandleClient(UpstoxOptionChainClient):
+        def _get_v3(self, path):
+            assert path == "/historical-candle/intraday/NSE_FO%7C12345/minutes/3"
+            return {"status": "success", "data": {"candles": [
+                ["2026-08-12T09:15:00+05:30", 100, 105, 98, 103, 500, 1000],
+            ]}}
+
+    candles = OptionCandleClient(access_token="test").fetch_instrument_intraday_candles(
+        "NSE_FO|12345", 3,
+    )
+
+    assert candles[0].close == 103
+    assert candles[0].open_interest == 1000
+
+
 def test_historical_candles_use_v3_date_path_and_sort_oldest_first():
     class CandleClient(UpstoxOptionChainClient):
         def _get_v3(self, path):

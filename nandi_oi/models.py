@@ -11,7 +11,7 @@ Action = Literal["BUY CE", "BUY PE", "NO TRADE"]
 
 @dataclass(frozen=True)
 class IntradayCandle:
-    """One read-only Upstox OHLC candle for the NIFTY underlying."""
+    """One read-only Upstox OHLC candle for an underlying or option contract."""
 
     timestamp: datetime
     open: float
@@ -20,6 +20,16 @@ class IntradayCandle:
     close: float
     volume: float = 0.0
     open_interest: float = 0.0
+
+
+@dataclass(frozen=True)
+class ATMOptionInstruments:
+    """The live nearest-expiry ATM CE and PE instrument identifiers."""
+
+    strike: float
+    expiry: str
+    ce_instrument_key: str
+    pe_instrument_key: str
 
 
 @dataclass(frozen=True)

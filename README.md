@@ -5,9 +5,9 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 ## Current architecture
 
 - **NSE option chain:** nearest expiry, ATM ±5 strikes only.
-- **NSE NIFTY spot:** used for the live price and as the chart fallback.
-- **Upstox candles:** optional read-only V3 historical + intraday OHLCV supplies completed 15-minute NIFTY evidence and the exact nearest-expiry ATM CE/PE premium charts.
-- **TradingView:** the official hosted Advanced Chart embeds the actual `NSE:NIFTY` symbol for interactive visual analysis. It is not used as Nandi's signal feed.
+- **NSE NIFTY spot:** used for the live price and limited decision-context fallback; it is never converted into guessed OHLC candles.
+- **Upstox candles:** optional read-only V3 historical + intraday OHLCV supplies the visible NIFTY 50 chart, completed 15-minute technical evidence and the exact nearest-expiry ATM CE/PE premium charts.
+- **Chart rendering:** NIFTY 50 and both ATM option charts use the same candlestick renderer and Upstox market-data source. The chart path contains no broker-order action.
 - **NIFTY + ATM confirmation:** an additional paper-validation strategy compares matching completed NIFTY, ATM CE and ATM PE candles and reports CONFIRM CE, CONFIRM PE, WAIT or UNAVAILABLE. Its agreement score is not a win probability and does not change the final BUY gate before validation.
 - **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
@@ -60,8 +60,8 @@ The Upstox token is optional, but required for technical candles, completed-cand
 
 ## Application pages
 
-- **Command Center:** actual embedded TradingView NIFTY chart, side-by-side live ATM CE/PE charts, chart-confirmation strategy, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
-- **NIFTY Option Charts:** dedicated actual NIFTY TradingView chart plus auto-rolling nearest-expiry ATM CE and PE premium charts.
+- **Command Center:** read-only Upstox NIFTY 50 chart, side-by-side live ATM CE/PE charts, chart-confirmation strategy, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
+- **NIFTY Option Charts:** dedicated Upstox NIFTY 50 chart plus auto-rolling nearest-expiry ATM CE and PE premium charts, all read only.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
 - **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.

@@ -11,45 +11,6 @@ from nandi_oi.models import IntradayCandle
 
 IST = ZoneInfo("Asia/Kolkata")
 
-
-def tradingview_advanced_chart_html() -> str:
-    """Embed TradingView's hosted Advanced Chart for the NSE NIFTY index."""
-    config = {
-        "autosize": True,
-        "symbol": "NSE:NIFTY",
-        "interval": "15",
-        "timezone": "Asia/Kolkata",
-        "theme": "light",
-        "style": "1",
-        "locale": "en",
-        "backgroundColor": "#ffffff",
-        "gridColor": "rgba(219, 232, 224, 0.45)",
-        "allow_symbol_change": True,
-        "calendar": False,
-        "details": True,
-        "hide_side_toolbar": False,
-        "hide_top_toolbar": False,
-        "hide_legend": False,
-        "hide_volume": False,
-        "hotlist": False,
-        "save_image": True,
-        "withdateranges": True,
-        "support_host": "https://www.tradingview.com",
-    }
-    settings = json.dumps(config, separators=(",", ":"))
-    return f"""
-    <div class="tradingview-widget-container" style="height:640px;width:100%;">
-      <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%;"></div>
-      <div class="tradingview-widget-copyright" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;padding-top:8px;">
-        <a href="https://www.tradingview.com/symbols/NSE-NIFTY/" rel="noopener nofollow" target="_blank"><span style="color:#126b3a;">NIFTY 50 chart</span></a><span style="color:#65756d;"> by TradingView</span>
-      </div>
-      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-      {settings}
-      </script>
-    </div>
-    """
-
-
 def merge_candles(*groups: Iterable[IntradayCandle]) -> tuple[IntradayCandle, ...]:
     """Merge candle groups by timestamp; later groups replace earlier duplicates."""
     merged: dict[datetime, IntradayCandle] = {}

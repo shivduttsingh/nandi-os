@@ -6,7 +6,6 @@ from nandi_v2.charting import (
     candlestick_chart_html,
     completed_candles,
     merge_candles,
-    tradingview_advanced_chart_html,
 )
 
 
@@ -33,6 +32,8 @@ def test_chart_uses_candlestick_series_and_upstox_attribution():
 
     assert "addCandlestickSeries" in html
     assert "read-only Upstox V3 OHLC data" in html
+    assert "UPSTOX · READ ONLY" in html
+    assert "embed-widget-advanced-chart.js" not in html
     assert '"open":25005' in html
 
 
@@ -48,16 +49,6 @@ def test_option_chart_uses_exact_contract_title_and_compact_height():
     assert "NIFTY 25000 CE · 15-minute candles" in html
     assert "ATM option premium" in html
     assert "height:320px" in html
-
-
-def test_tradingview_advanced_chart_embeds_live_nifty_with_full_toolbar():
-    html = tradingview_advanced_chart_html()
-
-    assert "embed-widget-advanced-chart.js" in html
-    assert '"symbol":"NSE:NIFTY"' in html
-    assert '"interval":"15"' in html
-    assert '"allow_symbol_change":true' in html
-    assert '"hide_side_toolbar":false' in html
 
 
 def test_historical_and_intraday_candles_merge_without_duplicate_timestamps():

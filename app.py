@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
+from nandi_oi.historical import UpstoxHistoricalClient
 from nandi_v2.atm_strategy import ATMConfirmationSignal, assess_atm_confirmation
 from nandi_v2.charting import (
     candlestick_chart_html,
@@ -33,6 +34,10 @@ from nandi_v2.fundamentals import (
     fundamental_rows,
 )
 from nandi_v2.history import DecisionHistory
+from nandi_v2.indicator_validation import (
+    IndicatorValidationReport,
+    IndividualIndicatorBacktester,
+)
 from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
 from nandi_v2.nse import NSEDataError, NSEPublicClient
@@ -111,6 +116,11 @@ def upstox_candle_client(access_token: str) -> UpstoxOptionChainClient:
     return UpstoxOptionChainClient(access_token=access_token, timeout_seconds=15)
 
 
+@st.cache_resource
+def upstox_historical_client(access_token: str) -> UpstoxHistoricalClient:
+    return UpstoxHistoricalClient(access_token=access_token, timeout_seconds=20)
+
+
 def now_ist() -> datetime:
     return datetime.now(IST)
 
@@ -186,6 +196,7 @@ def init_state() -> None:
         "latest_technical_assessment": None,
         "latest_fundamental_assessment": None,
         "latest_confluence_decision": None,
+        "indicator_validation_report": None,
         "candidate_side": "",
         "candidate_count": 0,
         "candidate_snapshot_timestamp": "",
@@ -1069,6 +1080,117 @@ def results_page() -> None:
     st.caption("Premium win rate is shown only for trades with recorded entry and exit premiums; older trades remain available as NIFTY-point results. No missing premium is estimated.")
 
 
+def indicator_validation_page() -> None:
+    header(
+        "Individual Indicator Validation",
+        "Test every Nandi Top 10 indicator separately against historical NIFTY and actual nearest-weekly ATM option premiums.",
+    )
+    token = configured_upstox_token()
+    if not token:
+        st.warning(
+            "The read-only Upstox token is required to retrieve NIFTY history and Upstox Plus expired option candles."
+        )
+        st.code('[upstox]\naccess_token = "YOUR_READ_ONLY_TOKEN"', language="toml")
+        return
+
+    end_default = now_ist().date() - timedelta(days=1)
+    start_default = end_default - timedelta(days=30)
+    with st.form("individual_indicator_validation_form"):
+        dates = st.columns(2)
+        start_date = dates[0].date_input("Start date", start_default, max_value=end_default)
+        end_date = dates[1].date_input("End date", end_default, max_value=end_default)
+        submitted = st.form_submit_button(
+            "Run Top 10 validation",
+            type="primary",
+            use_container_width=True,
+        )
+
+    st.caption(
+        "Default test: completed 15-minute NIFTY signal → next five-minute nearest-weekly ATM option open → "
+        "5% premium stop / 7.5% target / 45-minute maximum hold / maximum three trades per day."
+    )
+    if submitted:
+        if start_date > end_date:
+            st.error("Start date must be on or before the end date.")
+        elif (end_date - start_date).days > 92:
+            st.error("Run at most 92 calendar days at once to keep the historical request bounded.")
+        else:
+            progress = st.progress(0.0, text="Resolving historical weekly option contracts…")
+
+            def update_progress(done: int, total: int, label: str) -> None:
+                progress.progress(
+                    min(1.0, done / max(total, 1)),
+                    text=f"Loading expired option candles {done}/{total} · {label}",
+                )
+
+            try:
+                client = upstox_historical_client(token)
+                snapshots = client.build_snapshots(
+                    start_date,
+                    end_date,
+                    progress=update_progress,
+                    expiry_mode="weekly",
+                )
+                nifty_candles = client.spot_ohlc_candles(start_date, end_date, 5)
+                report = IndividualIndicatorBacktester().run(nifty_candles, snapshots)
+                st.session_state.indicator_validation_report = report
+                progress.progress(1.0, text="Individual indicator validation complete")
+            except (UpstoxAPIError, ValueError) as exc:
+                progress.empty()
+                st.error(str(exc))
+
+    report: IndicatorValidationReport | None = st.session_state.indicator_validation_report
+    if report is None:
+        st.info("Run the validation to calculate a separate historical percentage for every Top 10 indicator.")
+        return
+
+    totals = st.columns(5)
+    totals[0].metric("Test period", f"{report.start_date} → {report.end_date}")
+    totals[1].metric("NIFTY 5m candles", report.source_candles)
+    totals[2].metric("Option snapshots", report.option_snapshots)
+    totals[3].metric("Indicators", len(report.results))
+    totals[4].metric("Completed trades", sum(len(result.trades) for result in report.results))
+
+    summary = pd.DataFrame(report.summary_rows())
+    st.subheader("Separate indicator percentages")
+    st.dataframe(summary, use_container_width=True, hide_index=True, height=470)
+    st.download_button(
+        "Download indicator summary CSV",
+        summary.to_csv(index=False).encode("utf-8"),
+        file_name=f"nandi-indicator-validation-{report.start_date}-{report.end_date}.csv",
+        mime="text/csv",
+    )
+    st.warning(
+        "A displayed win rate is an observed historical result, not a guaranteed future probability. "
+        "Every row stays UNVALIDATED until that indicator has at least 100 completed option trades."
+    )
+
+    with st.expander("Indicator trade ledger", expanded=False):
+        selected = st.selectbox("Indicator", list(NANDI_TOP_10_INDICATORS))
+        ledger = pd.DataFrame(report.ledger_rows(selected))
+        if ledger.empty:
+            st.info("This indicator produced no completed trade in the selected period.")
+        else:
+            st.dataframe(ledger, use_container_width=True, hide_index=True, height=520)
+            st.download_button(
+                "Download selected ledger CSV",
+                ledger.to_csv(index=False).encode("utf-8"),
+                file_name=(
+                    "nandi-"
+                    + selected.lower().replace(" ", "-").replace("/", "-").replace("%", "pct")
+                    + "-ledger.csv"
+                ),
+                mime="text/csv",
+            )
+
+    st.caption(
+        "Method: chronological replay with no future candles; signal only on a directional transition; "
+        "entry at the next ATM option open; stop wins ties when stop and target occur in one candle; "
+        "0.25% assumed slippage on entry and exit; brokerage/taxes and historical bid/ask are unavailable. "
+        "Each indicator is tested alone, not as the complete Fundamental + Technical + OI Nandi strategy."
+    )
+
+
 def settings_page() -> None:
     header("Settings", "Tune live refresh and setup gates without changing the engine code.")
     left, right = st.columns(2, gap="large")
@@ -1129,13 +1251,14 @@ def settings_page() -> None:
 
 def sidebar() -> str:
     st.sidebar.markdown("## Nandi")
-    st.sidebar.caption("Two-pillar NIFTY decision system")
+    st.sidebar.caption("Three-pillar NIFTY decision system")
     page = st.sidebar.radio(
         "Navigation",
         [
             "Command Center",
             "Fundamental Desk",
             "Technical Lab",
+            "Indicator Validation",
             "OI & Execution",
             "History",
             "Replay",
@@ -1164,6 +1287,8 @@ elif page == "Fundamental Desk":
     fundamental_desk_page()
 elif page == "Technical Lab":
     technical_lab_page()
+elif page == "Indicator Validation":
+    indicator_validation_page()
 elif page == "OI & Execution":
     header("OI & Execution", "Live ATM ±5 NSE option-chain rows, microstructure score evidence and source health.")
     evidence_fragment()

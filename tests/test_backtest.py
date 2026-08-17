@@ -50,6 +50,27 @@ def test_monthly_expiries_use_last_listed_expiry_in_each_month():
     assert monthly_expiries(expiries) == [date(2026, 4, 30), date(2026, 5, 28)]
 
 
+def test_historical_spot_ohlc_is_parsed_and_reused_for_close_replay():
+    class HistoricalClient(UpstoxHistoricalClient):
+        calls = 0
+
+        def _get_url(self, url):
+            self.calls += 1
+            assert "/minutes/5/" in url
+            return {"status": "success", "data": {"candles": [
+                ["2026-08-14T09:15:00+05:30", 25000, 25020, 24990, 25010, 100, 0],
+            ]}}
+
+    client = HistoricalClient(access_token="test")
+    candles = client.spot_ohlc_candles(date(2026, 8, 14), date(2026, 8, 14), 5)
+    closes = client.spot_candles(date(2026, 8, 14), date(2026, 8, 14), 5)
+
+    assert candles[0].open == 25000
+    assert candles[0].close == 25010
+    assert list(closes.values()) == [25010]
+    assert client.calls == 1
+
+
 def test_backtest_reuses_persistence_and_closes_target():
     start = datetime(2026, 7, 20, 9, 20)
     snapshots = [

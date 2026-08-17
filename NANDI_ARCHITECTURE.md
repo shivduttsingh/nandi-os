@@ -49,6 +49,8 @@ Upstox V3 supplies raw historical and current-day candles; Nandi calculates the 
 
 The Command Center separately embeds TradingView's hosted `NSE:NIFTY` Advanced Chart for operator analysis and shows the current nearest-expiry ATM CE and PE Upstox premium candles side by side. A paper-validation confirmation strategy compares only matching completed timestamps across all three charts. It remains outside the final confluence weight until recorded results justify promotion, avoiding double-counting premium evidence already present in the OI/execution pillar.
 
+Individual-indicator validation is kept separate from the unified model. Each Top 10 indicator is replayed chronologically on completed 15-minute NIFTY candles, enters the next five-minute nearest-weekly ATM option open, and uses the same 5% premium risk with a 7.5% first target and 45-minute time exit. Results include conservative slippage, an auditable trade ledger and a 95% win-rate interval. No individual percentage is labelled validated before 100 completed option trades.
+
 ## Fundamental design
 
 The current desk accepts an authenticated, sourced snapshot and stores every update in SQLite. Each factor contains:

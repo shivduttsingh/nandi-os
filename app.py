@@ -19,7 +19,6 @@ from nandi_v2.charting import (
     candlestick_chart_html,
     completed_candles,
     merge_candles,
-    tradingview_advanced_chart_html,
 )
 from nandi_v2.confluence import ConfluenceDecision, apply_confluence_gate, combine_decision
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
@@ -780,8 +779,8 @@ def evidence_fragment() -> None:
             "Technical history error": st.session_state.technical_history_error or "None",
             "Stable structure interval": f"{st.session_state.stable_interval_minutes} minutes",
             "Decision recalculation": "1s",
-            "TradingView rendering": "Embedded TradingView Advanced Chart for visual analysis",
-            "Nandi technical evidence": "TradingView Lightweight Charts with read-only Upstox OHLC",
+            "NIFTY chart data": "Read-only Upstox V3 OHLC",
+            "Chart rendering": "Candlestick chart; no broker-order connection",
         })
 
 
@@ -962,6 +961,58 @@ def technical_lab_page() -> None:
     )
 
 
+@st.fragment(run_every="30s")
+def nifty_upstox_chart_fragment() -> None:
+    """Show NIFTY 50 from the same read-only Upstox feed as the ATM charts."""
+    if not configured_upstox_token():
+        st.warning("Add the read-only Upstox token to load the NIFTY 50 chart.")
+        return
+
+    now = now_ist()
+    refresh_market_data(now)
+    interval = int(st.session_state.stable_interval_minutes)
+    candles = technical_candles()
+    if not candles:
+        st.info("Waiting for NIFTY 50 candles from Upstox.")
+        if st.session_state.upstox_candle_error:
+            st.warning(st.session_state.upstox_candle_error)
+        return
+
+    latest = candles[-1]
+    intraday = tuple(st.session_state.latest_upstox_candles)
+    session_open = intraday[0].open if intraday else latest.open
+    metric, source = st.columns([1, 2])
+    metric.metric(
+        "NIFTY 50",
+        f"{latest.close:,.2f}",
+        f"{latest.close - session_open:+.2f} session",
+    )
+    source.caption(
+        f"Upstox V3 · NSE_INDEX|Nifty 50 · {interval}-minute OHLC · "
+        f"latest candle {latest.timestamp:%d %b %Y %H:%M} IST"
+    )
+    components.html(
+        candlestick_chart_html(
+            candles,
+            interval_minutes=interval,
+            title="NIFTY 50",
+            subtitle="NSE_INDEX|Nifty 50 · read-only Upstox V3 OHLC data",
+            evidence_note=(
+                "Market-data view only: Nandi has no order control here. "
+                "Completed candles feed technical evidence; the forming candle is display-only."
+            ),
+            chart_height=540,
+        ),
+        height=655,
+        scrolling=False,
+    )
+    if st.session_state.upstox_candle_error:
+        st.warning(
+            "Latest NIFTY candle refresh failed; the last valid Upstox chart remains visible. "
+            + st.session_state.upstox_candle_error
+        )
+
+
 def live_page() -> None:
     header("Command Center", "One decision gate combining fundamental context, technical families, live OI evidence and a stable risk lifecycle.")
     controls = st.columns([1, 1, 1, 2])
@@ -972,16 +1023,8 @@ def live_page() -> None:
     controls[3].caption("Nandi recalculates every second. NSE requests are rate-limited separately to reduce blocking.")
     chart, panel = st.columns([1.65, 1], gap="large")
     with chart:
-        st.subheader("Live NIFTY chart")
-        components.html(
-            tradingview_advanced_chart_html(),
-            height=680,
-            scrolling=False,
-        )
-        st.caption(
-            "Actual NIFTY 50 TradingView chart for visual analysis. Nandi's decisions continue to use "
-            "its separately verified Fundamental + Technical + OI data, not drawings on this chart."
-        )
+        st.subheader("Live NIFTY 50 chart — Upstox read only")
+        nifty_upstox_chart_fragment()
     with panel:
         st.subheader("Nandi decision")
         live_engine_fragment()
@@ -1112,7 +1155,7 @@ def settings_page() -> None:
         st.markdown(
             "**NSE:** option-chain-v3 and live index spot.  \n"
             "**Upstox:** read-only 15-minute NIFTY OHLC candles for stable structure.  \n"
-            "**TradingView:** Lightweight Charts rendering plus external full-chart link."
+            "**Chart:** NIFTY and ATM option candles use the same read-only Upstox market-data feed."
         )
         st.write({
             "Upstox candle feed": "Configured" if configured_upstox_token() else "Not configured",

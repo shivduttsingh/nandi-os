@@ -47,7 +47,7 @@ Indicators vote within their family first. The five family outputs then form the
 
 Upstox V3 supplies raw historical and current-day candles; Nandi calculates the indicators locally so every value is reproducible. A rolling ten-calendar-day history window prevents long-lookback indicators from remaining in warm-up after the opening bell. The focused Nandi Top 10 view spans trend, momentum, volatility and structure, while the decision gate still uses all 25 through family-balanced voting. The Top 10 is a product selection, not an exchange-published popularity ranking.
 
-The Command Center separately embeds TradingView's hosted `NSE:NIFTY` Advanced Chart for operator analysis and shows the current nearest-expiry ATM CE and PE Upstox premium candles side by side. A paper-validation confirmation strategy compares only matching completed timestamps across all three charts. It remains outside the final confluence weight until recorded results justify promotion, avoiding double-counting premium evidence already present in the OI/execution pillar.
+The Command Center shows the Upstox `NSE_INDEX|Nifty 50` OHLC chart and the current nearest-expiry ATM CE and PE Upstox premium candles side by side. All three paths are read-only market-data requests and expose no order action. A paper-validation confirmation strategy compares only matching completed timestamps across all three charts. It remains outside the final confluence weight until recorded results justify promotion, avoiding double-counting premium evidence already present in the OI/execution pillar.
 
 ## Fundamental design
 

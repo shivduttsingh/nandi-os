@@ -13,7 +13,6 @@ from nandi_v2.atm_strategy import ATMConfirmationSignal, assess_atm_confirmation
 from nandi_v2.charting import (
     candlestick_chart_html,
     completed_candles,
-    tradingview_advanced_chart_html,
 )
 
 
@@ -55,13 +54,8 @@ for key, value in {
 
 st.title("NIFTY 50 + live ATM option charts")
 st.caption(
-    "The first panel is the actual embedded NIFTY 50 TradingView chart. "
-    "The two premium charts below automatically follow the nearest-expiry ATM CE and PE contracts."
-)
-components.html(
-    tradingview_advanced_chart_html(),
-    height=680,
-    scrolling=False,
+    "All three charts use read-only Upstox market data. The two premium charts automatically "
+    "follow the nearest-expiry ATM CE and PE contracts; this page cannot place orders."
 )
 
 token = configured_token()
@@ -76,6 +70,41 @@ def live_atm_pair() -> None:
     client = candle_client(token)
     try:
         nifty_candles = client.fetch_intraday_candles(INTERVAL_MINUTES)
+        st.session_state.standalone_nifty_candles = nifty_candles
+        st.session_state.standalone_chart_error = ""
+    except (UpstoxAPIError, ValueError) as exc:
+        st.session_state.standalone_chart_error = str(exc)
+
+    nifty_candles = tuple(st.session_state.standalone_nifty_candles)
+    if not nifty_candles:
+        st.info("Waiting for NIFTY 50 candles from Upstox.")
+        if st.session_state.standalone_chart_error:
+            st.warning(st.session_state.standalone_chart_error)
+        return
+
+    st.subheader("NIFTY 50 · Upstox read only")
+    st.metric(
+        "NIFTY 50",
+        f"{nifty_candles[-1].close:,.2f}",
+        f"{nifty_candles[-1].close - nifty_candles[0].open:+.2f} today",
+    )
+    components.html(
+        candlestick_chart_html(
+            nifty_candles,
+            interval_minutes=INTERVAL_MINUTES,
+            title="NIFTY 50",
+            subtitle="NSE_INDEX|Nifty 50 · read-only Upstox V3 OHLC data",
+            evidence_note=(
+                "Market-data view only: this chart cannot place or modify an Upstox order. "
+                "The forming candle is display-only for Nandi's chart confirmation."
+            ),
+            chart_height=540,
+        ),
+        height=655,
+        scrolling=False,
+    )
+
+    try:
         pair = client.resolve_atm_option_instruments("current_week", nifty_candles[-1].close)
         ce_candles = client.fetch_instrument_intraday_candles(
             pair.ce_instrument_key,
@@ -86,7 +115,6 @@ def live_atm_pair() -> None:
             INTERVAL_MINUTES,
         )
         # Publish only a complete matching pair.
-        st.session_state.standalone_nifty_candles = nifty_candles
         st.session_state.standalone_atm_ce_candles = ce_candles
         st.session_state.standalone_atm_pe_candles = pe_candles
         st.session_state.standalone_atm_strike = pair.strike
@@ -95,13 +123,12 @@ def live_atm_pair() -> None:
     except (UpstoxAPIError, ValueError) as exc:
         st.session_state.standalone_chart_error = str(exc)
 
-    nifty_candles = tuple(st.session_state.standalone_nifty_candles)
     ce_candles = tuple(st.session_state.standalone_atm_ce_candles)
     pe_candles = tuple(st.session_state.standalone_atm_pe_candles)
     strike = st.session_state.standalone_atm_strike
     expiry = st.session_state.standalone_atm_expiry
-    if strike is None or not nifty_candles or not ce_candles or not pe_candles:
-        st.info("Waiting for the first matching NIFTY, ATM CE and ATM PE candle set.")
+    if strike is None or not ce_candles or not pe_candles:
+        st.info("Waiting for the nearest-expiry ATM CE and PE candle pair.")
         if st.session_state.standalone_chart_error:
             st.warning(st.session_state.standalone_chart_error)
         return

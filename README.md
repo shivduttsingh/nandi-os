@@ -9,6 +9,7 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 - **Upstox candles:** optional read-only V3 historical + intraday OHLCV supplies completed 15-minute NIFTY evidence and the exact nearest-expiry ATM CE/PE premium charts.
 - **TradingView:** the official hosted Advanced Chart embeds the actual `NSE:NIFTY` symbol for interactive visual analysis. It is not used as Nandi's signal feed.
 - **NIFTY + ATM confirmation:** an additional paper-validation strategy compares matching completed NIFTY, ATM CE and ATM PE candles and reports CONFIRM CE, CONFIRM PE, WAIT or UNAVAILABLE. Its agreement score is not a win probability and does not change the final BUY gate before validation.
+- **Individual indicator validation:** replays every Nandi Top 10 indicator separately on completed 15-minute NIFTY candles and the next nearest-weekly ATM CE/PE option candle. Each row reports its own trades, wins, losses, win rate, 95% interval, premium return and drawdown; fewer than 100 completed trades remains UNVALIDATED.
 - **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
 - **Technical Lab:** exposes 25 indicators grouped into five evidence families so correlated indicators cannot dominate the decision by count alone.
@@ -64,6 +65,7 @@ The Upstox token is optional, but required for technical candles, completed-cand
 - **NIFTY Option Charts:** dedicated actual NIFTY TradingView chart plus auto-rolling nearest-expiry ATM CE and PE premium charts.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
 - **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
+- **Indicator Validation:** auditable, no-lookahead Upstox Plus replay for each Top 10 indicator using actual expired option OHLC and a downloadable trade ledger.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.
 - **History:** decision history and persisted lifecycle transitions.
 - **Replay:** deterministic replay of NSE frames captured by Nandi.

@@ -7,7 +7,7 @@ from typing import Callable
 from urllib.parse import quote
 
 from .configuration import is_configured_value
-from .models import OptionLeg, OptionSnapshot
+from .models import IntradayCandle, OptionLeg, OptionSnapshot
 from .upstox import UpstoxAPIError, UpstoxOptionChainClient
 
 
@@ -80,21 +80,59 @@ class UpstoxHistoricalClient(UpstoxOptionChainClient):
     def _candles(payload: dict) -> list[list]:
         return list((payload.get("data") or {}).get("candles") or [])
 
-    def spot_candles(self, start: date, end: date, interval_minutes: int = 5) -> dict[datetime, float]:
+    def spot_ohlc_candles(
+        self,
+        start: date,
+        end: date,
+        interval_minutes: int = 5,
+    ) -> tuple[IntradayCandle, ...]:
+        """Return cached historical NIFTY OHLCV candles for indicator replay."""
         if interval_minutes not in {1, 2, 3, 5, 10, 15, 30, 60}:
             raise ValueError("Unsupported historical candle interval")
+        cache_key = (start, end, interval_minutes)
+        cache = getattr(self, "_spot_ohlc_cache", {})
+        if cache_key in cache:
+            return cache[cache_key]
         key = quote(self.instrument_key, safe="")
-        result: dict[datetime, float] = {}
+        result: dict[datetime, IntradayCandle] = {}
         # Upstox caps 1–15 minute requests at one month, so fetch safe 28-day chunks.
         chunk_start = start
         while chunk_start <= end:
             chunk_end = min(end, chunk_start + timedelta(days=27))
             url = f"https://api.upstox.com/v3/historical-candle/{key}/minutes/{interval_minutes}/{chunk_end}/{chunk_start}"
             for row in self._candles(self._get_url(url)):
-                timestamp = datetime.fromisoformat(row[0])
-                result[timestamp] = float(row[4])
+                if len(row) < 5:
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+                    opened, high, low, closed = (float(row[index]) for index in range(1, 5))
+                    volume = float(row[5] or 0.0) if len(row) > 5 else 0.0
+                    open_interest = float(row[6] or 0.0) if len(row) > 6 else 0.0
+                except (TypeError, ValueError):
+                    continue
+                if min(opened, high, low, closed) <= 0 or high < low:
+                    continue
+                result[timestamp] = IntradayCandle(
+                    timestamp=timestamp,
+                    open=opened,
+                    high=high,
+                    low=low,
+                    close=closed,
+                    volume=max(0.0, volume),
+                    open_interest=max(0.0, open_interest),
+                )
             chunk_start = chunk_end + timedelta(days=1)
-        return result
+        candles = tuple(result[timestamp] for timestamp in sorted(result))
+        cache[cache_key] = candles
+        self._spot_ohlc_cache = cache
+        return candles
+
+    def spot_candles(self, start: date, end: date, interval_minutes: int = 5) -> dict[datetime, float]:
+        """Return historical NIFTY closes for the existing OI/RSI replay path."""
+        return {
+            candle.timestamp: candle.close
+            for candle in self.spot_ohlc_candles(start, end, interval_minutes)
+        }
 
     def option_candles(self, instrument_key: str, start: date, end: date) -> dict[datetime, tuple[float, float, float, float, float, float]]:
         cache_key = (instrument_key, start, end)

@@ -10,6 +10,7 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 - **Chart rendering:** NIFTY 50 and both ATM option charts use the same candlestick renderer and Upstox market-data source. The chart path contains no broker-order action.
 - **NIFTY + ATM confirmation:** an additional paper-validation strategy compares matching completed NIFTY, ATM CE and ATM PE candles and reports CONFIRM CE, CONFIRM PE, WAIT or UNAVAILABLE. Its agreement score is not a win probability and does not change the final BUY gate before validation.
 - **Separate ATM ±2 confirmation:** preserves the single-ATM strategy and adds a second paper-validation strategy using ATM, one and two strikes below, and one and two strikes above. It requires matching NIFTY direction, a robust median premium move, positive breadth across at least four of five strikes and same-strike CE/PE dominance. Ten read-only option charts are arranged as a five-chart CE column and five-chart PE column.
+- **Two automatic paper algos:** the ATM book paper-buys the confirmed ATM CE/PE; the ATM±2 book paper-buys the directional two-strike OTM contract. Each book is independent, uses 130 quantity, defaults to an 8 premium-point profit booking and 4 premium-point stop, permits one open position and at most three completed trades per day, and persists every exit separately.
 - **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
 - **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
 - **Technical Lab:** exposes 25 indicators grouped into five evidence families so correlated indicators cannot dominate the decision by count alone.
@@ -21,10 +22,10 @@ Nandi V2 is a private, explainable NIFTY options research dashboard built around
 - **NSE session gate:** closed/pre-market/weekend/configured-holiday states cannot emit a live BUY.
 - **Email gate:** only confirmed BUY CE / BUY PE setups at score 80+ are eligible for email; successful entry alerts are deduplicated.
 - **Trade lifecycle:** PREPARE -> ACTIVE -> HOLD -> BOOK PARTIAL / TRAIL -> EXIT, with a default 15-minute minimum hold, 45-minute maximum hold and 5-minute reversal cooldown. Spot or premium stops and targets remain immediate risk exits.
-- **Persistence:** decisions, lifecycle transitions, alerts and captured replay frames are stored in SQLite.
-- **Results:** completed lifecycle events are summarized daily, weekly and monthly in recorded option-premium results when available, alongside underlying NIFTY points. Missing premiums are never estimated.
+- **Persistence:** decisions, lifecycle transitions, alerts, captured replay frames, both paper positions and both paper trade ledgers are stored in SQLite.
+- **Results:** completed lifecycle events are summarized daily, weekly and monthly in recorded option-premium results when available, alongside underlying NIFTY points. A separate comparison reports ATM-vs-ATM±2 paper win rate, premium points and paper P&L. Missing premiums are never estimated.
 - **Replay:** stored NSE frames can be deterministically re-run through the V2 engine and the same confirmation/lifecycle logic.
-- **No broker orders:** research and paper-observation only.
+- **No broker orders:** the automatic algos only write simulated positions and results to SQLite; no placement, modification or cancellation endpoint exists.
 - **No broker fallback:** missing or stale NSE option-chain data produces NO TRADE. Missing Upstox candles fall back to the NSE spot chart and never trigger broker activity.
 
 ## Run locally
@@ -61,19 +62,20 @@ The Upstox token is optional, but required for technical candles, completed-cand
 
 ## Application pages
 
-- **Command Center:** read-only Upstox NIFTY 50 chart, the existing side-by-side ATM CE/PE charts, the separate ATM ±2 ten-chart window, both paper chart-confirmation strategies, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
+- **Command Center:** read-only Upstox NIFTY 50 chart, both automatic paper books, the existing side-by-side ATM CE/PE charts, the separate ATM ±2 ten-chart window, both chart-confirmation strategies, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
+- **Paper Algos:** focused live status for the separate ATM and ATM±2 paper books, including contract, entry, current premium, target, stop and independent trade ledger.
 - **NIFTY Option Charts:** dedicated Upstox NIFTY 50 chart, the unchanged nearest-expiry ATM CE/PE pair, and the separate ATM ±2 CE/PE chart columns, all read only.
 - **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
 - **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
 - **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.
-- **History:** decision history and persisted lifecycle transitions.
+- **History:** decision history, persisted lifecycle transitions and automatic paper-algo trades.
 - **Replay:** deterministic replay of NSE frames captured by Nandi.
 - **Results:** daily, weekly and monthly completed-trade summaries plus an auditable ledger.
 - **Settings:** decision thresholds, stable hold/cooldown controls, refresh cadence and configuration status.
 
 ## Important data note
 
-The included NSE public-site adapter is conservative and rate-limited. The screen can recalculate every second from the latest valid state, but it does not claim that NSE OI changes every second. Each source timestamp is shown separately. The forming Upstox candle is displayed but excluded from completed-candle market structure. For production-grade or licensed real-time use, replace `NSEPublicClient` with an authorised NSE Data feed while preserving the same models and engine interface.
+The included NSE public-site adapter is conservative and rate-limited. The screen can recalculate every second from the latest valid state, but it does not claim that NSE OI changes every second. Each source timestamp is shown separately. The read-only Upstox chart and paper-algo refresh paths are isolated from NSE failures, so an NSE outage becomes a warning instead of a chart traceback. The forming Upstox candle is displayed but excluded from completed-candle confirmation. For production-grade or licensed real-time use, replace `NSEPublicClient` with an authorised NSE Data feed while preserving the same models and engine interface.
 
 The Nandi score is a setup-quality score, not a guaranteed probability of profit. New fundamental inputs initially come from the authenticated research desk; authorised automated providers can later write to the same auditable factor contract.
 

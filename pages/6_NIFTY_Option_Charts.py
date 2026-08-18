@@ -14,6 +14,7 @@ from nandi_v2.charting import (
     candlestick_chart_html,
     completed_candles,
 )
+from nandi_v2.strike_window_ui import render_strike_window_charts
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -48,6 +49,8 @@ for key, value in {
     "standalone_atm_strike": None,
     "standalone_atm_expiry": "",
     "standalone_chart_error": "",
+    "standalone_strike_window_candles": tuple(),
+    "standalone_strike_window_error": "",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -186,6 +189,42 @@ def live_atm_pair() -> None:
         st.warning(
             "Latest refresh failed; the last complete chart set remains visible. "
             + st.session_state.standalone_chart_error
+        )
+
+    st.divider()
+    st.subheader("Separate ATM ±2 strike strategy")
+    st.caption(
+        "The working single-ATM strategy above is unchanged. This additional paper strategy "
+        "checks ATM, one and two strikes below, and one and two strikes above. All ten option "
+        "charts are read-only Upstox market data and cannot place orders."
+    )
+    try:
+        strike_window = client.fetch_option_window_intraday_candles(
+            "current_week",
+            nifty_candles[-1].close,
+            INTERVAL_MINUTES,
+            wings=2,
+        )
+        # Publish only when every CE/PE series in the five-strike window succeeds.
+        st.session_state.standalone_strike_window_candles = strike_window
+        st.session_state.standalone_strike_window_error = ""
+    except (UpstoxAPIError, ValueError) as exc:
+        st.session_state.standalone_strike_window_error = str(exc)
+
+    strike_window = tuple(st.session_state.standalone_strike_window_candles)
+    if strike_window:
+        render_strike_window_charts(
+            nifty_candles,
+            strike_window,
+            observed_at=datetime.now(IST),
+            interval_minutes=INTERVAL_MINUTES,
+        )
+    else:
+        st.info("Waiting for the complete ATM ±2 CE/PE chart window from Upstox.")
+    if st.session_state.standalone_strike_window_error:
+        st.warning(
+            "Latest ATM ±2 refresh failed; any last complete read-only chart window remains "
+            "visible. " + st.session_state.standalone_strike_window_error
         )
 
 

@@ -109,6 +109,56 @@ def test_atm_instruments_are_resolved_from_exact_expiry_and_nearest_strike():
     assert pair.pe_instrument_key == "PE-25050"
 
 
+def test_atm_plus_minus_two_instruments_are_resolved_in_strike_order():
+    class ChainClient(UpstoxOptionChainClient):
+        def _get(self, path, params):
+            assert path == "/option/chain"
+            assert params["expiry_date"] == "2026-08-20"
+            data = [
+                row(strike, 25062, 1000, 100, 1000, 90)
+                for strike in (25150, 24950, 25050, 25100, 25000)
+            ]
+            for item in data:
+                item["expiry"] = "2026-08-20"
+            return {"status": "success", "data": data}
+
+    pairs = ChainClient(access_token="test").resolve_option_window_instruments(
+        "20-Aug-2026",
+        25062,
+        wings=2,
+    )
+
+    assert [(pair.offset, pair.strike) for pair in pairs] == [
+        (-2, 24950),
+        (-1, 25000),
+        (0, 25050),
+        (1, 25100),
+        (2, 25150),
+    ]
+    assert pairs[0].ce_instrument_key == "CE-24950"
+    assert pairs[-1].pe_instrument_key == "PE-25150"
+
+
+def test_option_window_requires_both_wings_and_both_contract_sides():
+    class ShortChainClient(UpstoxOptionChainClient):
+        def fetch_raw_chain(self, _expiry=None):
+            return [
+                row(strike, 25000, 1000, 100, 1000, 90)
+                for strike in (24950, 25000, 25050)
+            ]
+
+    try:
+        ShortChainClient(access_token="test").resolve_option_window_instruments(
+            "current_week",
+            25000,
+            wings=2,
+        )
+    except UpstoxAPIError as exc:
+        assert "complete ATM ±2" in str(exc)
+    else:
+        raise AssertionError("Expected an incomplete strike window to be rejected")
+
+
 def test_option_instrument_candles_use_the_exact_contract_key():
     class OptionCandleClient(UpstoxOptionChainClient):
         def _get_v3(self, path):

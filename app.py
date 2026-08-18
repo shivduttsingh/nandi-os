@@ -43,6 +43,7 @@ from nandi_v2.results import (
     trade_rows,
 )
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
+from nandi_v2.strike_window_ui import render_strike_window_charts
 from nandi_v2.technical import (
     NANDI_TOP_10_INDICATORS,
     TechnicalAssessment,
@@ -171,6 +172,7 @@ def init_state() -> None:
         "last_data_error": "",
         "upstox_candle_error": "",
         "atm_option_candle_error": "",
+        "strike_window_candle_error": "",
         "technical_history_error": "",
         "spot_points": [],
         "latest_upstox_candles": tuple(),
@@ -178,6 +180,7 @@ def init_state() -> None:
         "latest_atm_pe_candles": tuple(),
         "latest_atm_strike": None,
         "latest_atm_expiry": "",
+        "latest_strike_window_candles": tuple(),
         "technical_history_candles": tuple(),
         "technical_history_for_date": "",
         "latest_microstructure_decision": None,
@@ -728,6 +731,47 @@ def atm_option_charts_fragment() -> None:
         )
 
 
+@st.fragment(run_every="30s")
+def strike_window_charts_fragment() -> None:
+    token = configured_upstox_token()
+    if not token:
+        st.warning("Add the read-only Upstox token to load the ATM ±2 premium charts.")
+        return
+    oi_snapshot = st.session_state.latest_oi_snapshot
+    spot = st.session_state.latest_spot
+    if oi_snapshot is not None and spot is not None:
+        try:
+            st.session_state.latest_strike_window_candles = (
+                upstox_candle_client(token).fetch_option_window_intraday_candles(
+                    oi_snapshot.expiry,
+                    float(spot),
+                    int(st.session_state.stable_interval_minutes),
+                    wings=2,
+                )
+            )
+            st.session_state.strike_window_candle_error = ""
+        except (UpstoxAPIError, ValueError) as exc:
+            # Retain the last complete ten-chart window when a refresh is partial or fails.
+            st.session_state.strike_window_candle_error = str(exc)
+    strike_window = tuple(st.session_state.latest_strike_window_candles)
+    if not strike_window:
+        st.info("Waiting for the complete ATM ±2 CE/PE chart window from Upstox.")
+        if st.session_state.strike_window_candle_error:
+            st.warning(st.session_state.strike_window_candle_error)
+        return
+    render_strike_window_charts(
+        st.session_state.latest_upstox_candles,
+        strike_window,
+        observed_at=now_ist(),
+        interval_minutes=int(st.session_state.stable_interval_minutes),
+    )
+    if st.session_state.strike_window_candle_error:
+        st.warning(
+            "Latest ATM ±2 refresh failed; the last complete read-only ten-chart window remains "
+            "visible. " + st.session_state.strike_window_candle_error
+        )
+
+
 @st.fragment(run_every="2s")
 def evidence_fragment() -> None:
     snapshot = st.session_state.latest_oi_snapshot
@@ -773,6 +817,12 @@ def evidence_fragment() -> None:
                 if st.session_state.latest_atm_strike is not None else "Waiting"
             ),
             "ATM chart error": st.session_state.atm_option_candle_error or "None",
+            "ATM ±2 read-only charts": (
+                f"{len(st.session_state.latest_strike_window_candles)} strikes / "
+                f"{len(st.session_state.latest_strike_window_candles) * 2} option charts"
+                if st.session_state.latest_strike_window_candles else "Waiting"
+            ),
+            "ATM ±2 chart error": st.session_state.strike_window_candle_error or "None",
             "Technical candle source": "Upstox V3 historical + intraday" if configured_upstox_token() else "Not configured",
             "Technical completed candles": len(completed_technical_candles(now_ist())),
             "Technical history window": f"{st.session_state.technical_history_days} calendar days",
@@ -1030,6 +1080,14 @@ def live_page() -> None:
         live_engine_fragment()
     st.subheader("Live ATM option charts — CE and PE")
     atm_option_charts_fragment()
+    st.divider()
+    st.subheader("Separate ATM ±2 strike strategy — read only")
+    st.caption(
+        "The original single-ATM strategy above remains unchanged. This paper-validation "
+        "strategy compares ATM, one and two strikes below, and one and two strikes above. "
+        "It has no broker-order connection."
+    )
+    strike_window_charts_fragment()
     st.subheader("Three-pillar agreement")
     pillar_summary_fragment()
     st.subheader("Live option-chain evidence")

@@ -23,13 +23,30 @@ class IntradayCandle:
 
 
 @dataclass(frozen=True)
-class ATMOptionInstruments:
-    """The live nearest-expiry ATM CE and PE instrument identifiers."""
+class OptionStrikeInstruments:
+    """One nearest-expiry strike and its read-only CE/PE instrument identifiers."""
 
     strike: float
     expiry: str
     ce_instrument_key: str
     pe_instrument_key: str
+    offset: int = 0
+
+
+@dataclass(frozen=True)
+class ATMOptionInstruments(OptionStrikeInstruments):
+    """The live nearest-expiry ATM CE and PE instrument identifiers."""
+
+
+@dataclass(frozen=True)
+class OptionStrikeCandles:
+    """Matching read-only CE/PE candle series for one strike in an ATM window."""
+
+    strike: float
+    expiry: str
+    offset: int
+    ce_candles: tuple[IntradayCandle, ...]
+    pe_candles: tuple[IntradayCandle, ...]
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,14 @@ from urllib.request import Request, urlopen
 
 from .configuration import is_configured_value
 from .market_schedule import IST
-from .models import ATMOptionInstruments, IntradayCandle, OptionLeg, OptionSnapshot
+from .models import (
+    ATMOptionInstruments,
+    IntradayCandle,
+    OptionLeg,
+    OptionSnapshot,
+    OptionStrikeCandles,
+    OptionStrikeInstruments,
+)
 
 
 class UpstoxAPIError(RuntimeError):
@@ -205,6 +212,94 @@ class UpstoxOptionChainClient:
             ce_instrument_key=ce_key,
             pe_instrument_key=pe_key,
         )
+
+    def resolve_option_window_instruments(
+        self,
+        expiry: str,
+        spot: float,
+        *,
+        wings: int = 2,
+    ) -> tuple[OptionStrikeInstruments, ...]:
+        """Resolve ATM and an equal number of strikes above and below it."""
+        if spot <= 0:
+            raise ValueError("A positive NIFTY spot is required to resolve option strikes")
+        if wings < 1:
+            raise ValueError("Option strike wings must be positive")
+        rows = self.fetch_raw_chain(expiry)
+        candidates_by_strike = {
+            self._number(row.get("strike_price")): row
+            for row in rows
+            if self._number(row.get("strike_price")) > 0
+        }
+        candidates = [candidates_by_strike[strike] for strike in sorted(candidates_by_strike)]
+        if not candidates:
+            raise UpstoxAPIError("Upstox option chain contained no valid strikes")
+        atm_index = min(
+            range(len(candidates)),
+            key=lambda index: abs(
+                self._number(candidates[index].get("strike_price")) - spot
+            ),
+        )
+        if atm_index < wings or atm_index + wings >= len(candidates):
+            raise UpstoxAPIError(
+                f"Upstox option chain did not contain a complete ATM ±{wings} strike window"
+            )
+
+        selected: list[OptionStrikeInstruments] = []
+        for offset in range(-wings, wings + 1):
+            row = candidates[atm_index + offset]
+            call = row.get("call_options") or {}
+            put = row.get("put_options") or {}
+            ce_key = str(call.get("instrument_key") or "").strip()
+            pe_key = str(put.get("instrument_key") or "").strip()
+            if not ce_key or not pe_key:
+                strike = self._number(row.get("strike_price"))
+                raise UpstoxAPIError(
+                    f"Upstox strike {strike:.0f} did not contain both CE and PE instrument keys"
+                )
+            selected.append(
+                OptionStrikeInstruments(
+                    strike=self._number(row.get("strike_price")),
+                    expiry=str(row.get("expiry") or self._expiry_parameter(expiry)),
+                    ce_instrument_key=ce_key,
+                    pe_instrument_key=pe_key,
+                    offset=offset,
+                )
+            )
+        return tuple(selected)
+
+    def fetch_option_window_intraday_candles(
+        self,
+        expiry: str,
+        spot: float,
+        interval_minutes: int = 15,
+        *,
+        wings: int = 2,
+    ) -> tuple[OptionStrikeCandles, ...]:
+        """Fetch a complete, matching CE/PE candle window around live ATM."""
+        instruments = self.resolve_option_window_instruments(
+            expiry,
+            spot,
+            wings=wings,
+        )
+        output: list[OptionStrikeCandles] = []
+        for pair in instruments:
+            output.append(
+                OptionStrikeCandles(
+                    strike=pair.strike,
+                    expiry=pair.expiry,
+                    offset=pair.offset,
+                    ce_candles=self.fetch_instrument_intraday_candles(
+                        pair.ce_instrument_key,
+                        interval_minutes,
+                    ),
+                    pe_candles=self.fetch_instrument_intraday_candles(
+                        pair.pe_instrument_key,
+                        interval_minutes,
+                    ),
+                )
+            )
+        return tuple(output)
 
     @staticmethod
     def _number(value: Any) -> float:

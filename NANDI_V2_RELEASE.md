@@ -55,6 +55,17 @@ The Results page reconstructs completed ACTIVE-to-EXIT trades from those events 
 
 The Replay page re-runs the V2 engine deterministically on captured frames using the same fresh-snapshot confirmation rule as live mode. Nandi never invents missing historical frames.
 
+## Automatic paper algos
+
+Nandi runs two isolated simulated books while Command Center or Paper Algos is open:
+
+- **ATM Strategy Algo:** buys the confirmed nearest-expiry ATM CE or PE in the paper ledger.
+- **ATM ±2 Strategy Algo:** uses the five-strike breadth confirmation and buys two strikes OTM in the confirmed direction (`ATM+2 CE` or `ATM−2 PE`).
+
+Each entry is exactly 130 quantity. The default profit booking is +8 option-premium points and the default stop is −4 option-premium points; Settings permits values only inside the requested +8 to +10 and −3 to −4 ranges. One position per algo, a five-minute cooldown, a 45-minute safety exit and a three-trade-per-algo daily cap prevent repeated use of one confirmation. Paper P&L excludes brokerage, taxes, bid/ask slippage and live fills. No broker order endpoint is present.
+
+The paper tables are stored in the same SQLite database as the existing evidence journal. If Streamlit sleeps, Nandi resumes from the stored position and does not fabricate any missed fills.
+
 ## Streamlit Secrets
 
 ```toml

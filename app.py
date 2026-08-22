@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
+from nandi_oi import OptionStrikeCandles, UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
 from nandi_v2.atm_strategy import ATMConfirmationSignal, assess_atm_confirmation
@@ -35,6 +35,20 @@ from nandi_v2.history import DecisionHistory
 from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
 from nandi_v2.nse import NSEDataError, NSEPublicClient
+from nandi_v2.paper_algo import (
+    ATM_ALGO,
+    ATM_TWO_STRIKE_ALGO,
+    PAPER_COOLDOWN_MINUTES,
+    PAPER_MAX_DAILY_TRADES,
+    PAPER_MAX_HOLD_MINUTES,
+    PAPER_PROFIT_POINTS,
+    PAPER_QUANTITY,
+    PAPER_STOP_POINTS,
+    PaperAlgoStore,
+    PaperPosition,
+    advance_paper_algo,
+    directional_two_strike_contract,
+)
 from nandi_v2.replay import NandiReplay
 from nandi_v2.results import (
     MINIMUM_VALIDATION_TRADES,
@@ -43,6 +57,10 @@ from nandi_v2.results import (
     trade_rows,
 )
 from nandi_v2.session_gate import build_market_schedule, gate_live_signals
+from nandi_v2.strike_window_strategy import (
+    StrikeWindowSignal,
+    assess_strike_window_confirmation,
+)
 from nandi_v2.strike_window_ui import render_strike_window_charts
 from nandi_v2.technical import (
     NANDI_TOP_10_INDICATORS,
@@ -107,6 +125,11 @@ def history_store() -> DecisionHistory:
 
 
 @st.cache_resource
+def paper_algo_store() -> PaperAlgoStore:
+    return PaperAlgoStore()
+
+
+@st.cache_resource
 def upstox_candle_client(access_token: str) -> UpstoxOptionChainClient:
     return UpstoxOptionChainClient(access_token=access_token, timeout_seconds=15)
 
@@ -168,6 +191,7 @@ def init_state() -> None:
         "last_spot_fetch_at": None,
         "last_upstox_candle_fetch_at": None,
         "last_atm_option_candle_fetch_at": None,
+        "last_strike_window_candle_fetch_at": None,
         "last_technical_history_fetch_at": None,
         "last_data_error": "",
         "upstox_candle_error": "",
@@ -206,6 +230,12 @@ def init_state() -> None:
         "minimum_hold_minutes": 15,
         "maximum_hold_minutes": 45,
         "reversal_cooldown_minutes": 5,
+        "paper_algo_enabled": True,
+        "paper_profit_points": PAPER_PROFIT_POINTS,
+        "paper_stop_points": PAPER_STOP_POINTS,
+        "paper_max_hold_minutes": PAPER_MAX_HOLD_MINUTES,
+        "paper_cooldown_minutes": PAPER_COOLDOWN_MINUTES,
+        "paper_max_daily_trades": PAPER_MAX_DAILY_TRADES,
         "trade_state": restored,
         "trade_fingerprint": trade_fingerprint(restored),
     }
@@ -327,6 +357,32 @@ def pillar_assessments(now: datetime) -> tuple[TechnicalAssessment, FundamentalA
     return technical, fundamental
 
 
+def refresh_upstox_nifty_candles(now: datetime, *, force: bool = False) -> None:
+    """Refresh only the read-only Upstox NIFTY chart feed.
+
+    This intentionally has no NSE dependency, so an NSE option-chain outage can
+    never crash or blank the Upstox chart.
+    """
+    token = configured_upstox_token()
+    fetch_candles = bool(token) and (
+        force
+        or not st.session_state.latest_upstox_candles
+        or seconds_since(st.session_state.last_upstox_candle_fetch_at, now)
+        >= st.session_state.candle_refresh_seconds
+    )
+    if not fetch_candles:
+        return
+    try:
+        st.session_state.latest_upstox_candles = upstox_candle_client(
+            token
+        ).fetch_intraday_candles(int(st.session_state.stable_interval_minutes))
+        st.session_state.upstox_candle_error = ""
+    except (UpstoxAPIError, ValueError) as exc:
+        st.session_state.upstox_candle_error = str(exc)
+    finally:
+        st.session_state.last_upstox_candle_fetch_at = now
+
+
 def refresh_market_data(now: datetime) -> None:
     force = st.session_state.force_refresh
     fetch_oi = force or st.session_state.latest_oi_snapshot is None or seconds_since(st.session_state.last_oi_fetch_at, now) >= st.session_state.oi_refresh_seconds
@@ -355,54 +411,7 @@ def refresh_market_data(now: datetime) -> None:
         finally:
             st.session_state.last_spot_fetch_at = now
     token = configured_upstox_token()
-    fetch_candles = bool(token) and (
-        force
-        or not st.session_state.latest_upstox_candles
-        or seconds_since(st.session_state.last_upstox_candle_fetch_at, now)
-        >= st.session_state.candle_refresh_seconds
-    )
-    if fetch_candles:
-        try:
-            st.session_state.latest_upstox_candles = upstox_candle_client(token).fetch_intraday_candles(
-                int(st.session_state.stable_interval_minutes)
-            )
-            st.session_state.upstox_candle_error = ""
-        except (UpstoxAPIError, ValueError) as exc:
-            st.session_state.upstox_candle_error = str(exc)
-        finally:
-            st.session_state.last_upstox_candle_fetch_at = now
-    oi_snapshot = st.session_state.latest_oi_snapshot
-    fetch_atm_option_candles = bool(token and oi_snapshot) and (
-        force
-        or not st.session_state.latest_atm_ce_candles
-        or not st.session_state.latest_atm_pe_candles
-        or seconds_since(st.session_state.last_atm_option_candle_fetch_at, now)
-        >= st.session_state.candle_refresh_seconds
-    )
-    if fetch_atm_option_candles:
-        try:
-            client = upstox_candle_client(token)
-            spot = float(st.session_state.latest_spot or oi_snapshot.spot)
-            pair = client.resolve_atm_option_instruments(oi_snapshot.expiry, spot)
-            interval = int(st.session_state.stable_interval_minutes)
-            ce_candles = client.fetch_instrument_intraday_candles(
-                pair.ce_instrument_key,
-                interval,
-            )
-            pe_candles = client.fetch_instrument_intraday_candles(
-                pair.pe_instrument_key,
-                interval,
-            )
-            # Replace the pair together so CE and PE never show different ATM contracts.
-            st.session_state.latest_atm_ce_candles = ce_candles
-            st.session_state.latest_atm_pe_candles = pe_candles
-            st.session_state.latest_atm_strike = pair.strike
-            st.session_state.latest_atm_expiry = pair.expiry
-            st.session_state.atm_option_candle_error = ""
-        except (UpstoxAPIError, ValueError) as exc:
-            st.session_state.atm_option_candle_error = str(exc)
-        finally:
-            st.session_state.last_atm_option_candle_fetch_at = now
+    refresh_upstox_nifty_candles(now, force=force)
     today_key = now.date().isoformat()
     history_is_current = (
         st.session_state.technical_history_for_date == today_key
@@ -618,7 +627,15 @@ def decision_card(decision: Decision, snapshot: OptionChainSnapshot, gate: Any) 
 
 @st.fragment(run_every="1s")
 def live_engine_fragment() -> None:
-    snapshot, decision, gate = build_live_decision(now_ist())
+    try:
+        snapshot, decision, gate = build_live_decision(now_ist())
+    except Exception as exc:
+        st.session_state.last_data_error = f"Market feed: {exc}"
+        st.warning(
+            "The NSE feed is temporarily unavailable. Nandi retained its last valid data; "
+            "the independent read-only Upstox charts and paper panels can continue."
+        )
+        return
     if snapshot is None or decision is None:
         st.error("Waiting for a valid NSE option-chain snapshot.")
         if st.session_state.last_data_error:
@@ -629,16 +646,87 @@ def live_engine_fragment() -> None:
         st.warning("A refresh failed. Nandi is retaining the last valid NSE snapshot: " + st.session_state.last_data_error)
 
 
+def _option_chart_spot() -> float:
+    nifty_candles = tuple(st.session_state.latest_upstox_candles)
+    return float(
+        st.session_state.latest_spot
+        or (nifty_candles[-1].close if nifty_candles else 0.0)
+    )
+
+
+def _option_chart_expiry() -> str:
+    oi_snapshot = st.session_state.latest_oi_snapshot
+    return oi_snapshot.expiry if oi_snapshot is not None else "current_week"
+
+
+def refresh_atm_option_candles(now: datetime, *, force: bool = False) -> None:
+    token = configured_upstox_token()
+    spot = _option_chart_spot()
+    due = (
+        force
+        or not st.session_state.latest_atm_ce_candles
+        or not st.session_state.latest_atm_pe_candles
+        or seconds_since(st.session_state.last_atm_option_candle_fetch_at, now)
+        >= st.session_state.candle_refresh_seconds
+    )
+    if not token or spot <= 0 or not due:
+        return
+    try:
+        client = upstox_candle_client(token)
+        pair = client.resolve_atm_option_instruments(_option_chart_expiry(), spot)
+        interval = int(st.session_state.stable_interval_minutes)
+        ce = client.fetch_instrument_intraday_candles(pair.ce_instrument_key, interval)
+        pe = client.fetch_instrument_intraday_candles(pair.pe_instrument_key, interval)
+        st.session_state.latest_atm_ce_candles = ce
+        st.session_state.latest_atm_pe_candles = pe
+        st.session_state.latest_atm_strike = pair.strike
+        st.session_state.latest_atm_expiry = pair.expiry
+        st.session_state.atm_option_candle_error = ""
+    except (UpstoxAPIError, ValueError) as exc:
+        st.session_state.atm_option_candle_error = str(exc)
+    finally:
+        st.session_state.last_atm_option_candle_fetch_at = now
+
+
+def refresh_strike_window_candles(now: datetime, *, force: bool = False) -> None:
+    token = configured_upstox_token()
+    spot = _option_chart_spot()
+    due = (
+        force
+        or not st.session_state.latest_strike_window_candles
+        or seconds_since(st.session_state.last_strike_window_candle_fetch_at, now)
+        >= st.session_state.candle_refresh_seconds
+    )
+    if not token or spot <= 0 or not due:
+        return
+    try:
+        st.session_state.latest_strike_window_candles = (
+            upstox_candle_client(token).fetch_option_window_intraday_candles(
+                _option_chart_expiry(),
+                spot,
+                int(st.session_state.stable_interval_minutes),
+                wings=2,
+            )
+        )
+        st.session_state.strike_window_candle_error = ""
+    except (UpstoxAPIError, ValueError) as exc:
+        st.session_state.strike_window_candle_error = str(exc)
+    finally:
+        st.session_state.last_strike_window_candle_fetch_at = now
+
+
 @st.fragment(run_every="30s")
 def atm_option_charts_fragment() -> None:
+    token = configured_upstox_token()
     interval = int(st.session_state.stable_interval_minutes)
+    if not token:
+        st.warning("Add the read-only Upstox token to load live ATM CE and PE premium charts.")
+        return
+    refresh_atm_option_candles(now_ist())
     strike = st.session_state.latest_atm_strike
     expiry = st.session_state.latest_atm_expiry
     ce_candles = tuple(st.session_state.latest_atm_ce_candles)
     pe_candles = tuple(st.session_state.latest_atm_pe_candles)
-    if not configured_upstox_token():
-        st.warning("Add the read-only Upstox token to load live ATM CE and PE premium charts.")
-        return
     if strike is None or not ce_candles or not pe_candles:
         st.info("Waiting for the nearest-expiry ATM CE and PE candles from Upstox.")
         if st.session_state.atm_option_candle_error:
@@ -737,22 +825,7 @@ def strike_window_charts_fragment() -> None:
     if not token:
         st.warning("Add the read-only Upstox token to load the ATM ±2 premium charts.")
         return
-    oi_snapshot = st.session_state.latest_oi_snapshot
-    spot = st.session_state.latest_spot
-    if oi_snapshot is not None and spot is not None:
-        try:
-            st.session_state.latest_strike_window_candles = (
-                upstox_candle_client(token).fetch_option_window_intraday_candles(
-                    oi_snapshot.expiry,
-                    float(spot),
-                    int(st.session_state.stable_interval_minutes),
-                    wings=2,
-                )
-            )
-            st.session_state.strike_window_candle_error = ""
-        except (UpstoxAPIError, ValueError) as exc:
-            # Retain the last complete ten-chart window when a refresh is partial or fails.
-            st.session_state.strike_window_candle_error = str(exc)
+    refresh_strike_window_candles(now_ist())
     strike_window = tuple(st.session_state.latest_strike_window_candles)
     if not strike_window:
         st.info("Waiting for the complete ATM ±2 CE/PE chart window from Upstox.")
@@ -770,6 +843,247 @@ def strike_window_charts_fragment() -> None:
             "Latest ATM ±2 refresh failed; the last complete read-only ten-chart window remains "
             "visible. " + st.session_state.strike_window_candle_error
         )
+
+
+def _completed_strike_window(now: datetime, interval: int) -> tuple[OptionStrikeCandles, ...]:
+    return tuple(
+        OptionStrikeCandles(
+            strike=item.strike,
+            expiry=item.expiry,
+            offset=item.offset,
+            ce_candles=completed_candles(item.ce_candles, now, interval),
+            pe_candles=completed_candles(item.pe_candles, now, interval),
+        )
+        for item in st.session_state.latest_strike_window_candles
+    )
+
+
+def _paper_signal_key(
+    strategy: str,
+    stamp: datetime | None,
+    side: str,
+    strike: float,
+    expiry: str,
+) -> str:
+    if stamp is None or side not in {"CE", "PE"} or strike <= 0:
+        return ""
+    return f"{strategy}:{stamp.isoformat()}:{side}:{strike:.0f}:{expiry}"
+
+
+def _position_premium(position: PaperPosition) -> float:
+    strike = float(position.strike)
+    if strike == float(st.session_state.latest_atm_strike or 0.0):
+        candles = (
+            st.session_state.latest_atm_ce_candles
+            if position.side == "CE"
+            else st.session_state.latest_atm_pe_candles
+        )
+        if candles:
+            return float(candles[-1].close)
+    for item in st.session_state.latest_strike_window_candles:
+        if float(item.strike) != strike:
+            continue
+        candles = item.ce_candles if position.side == "CE" else item.pe_candles
+        if candles:
+            return float(candles[-1].close)
+    return 0.0
+
+
+def _paper_algo_inputs(now: datetime) -> dict[str, dict[str, Any]]:
+    interval = int(st.session_state.stable_interval_minutes)
+    complete_nifty = completed_candles(
+        st.session_state.latest_upstox_candles,
+        now,
+        interval,
+    )
+    signal_stamp = complete_nifty[-1].timestamp if complete_nifty else None
+    output: dict[str, dict[str, Any]] = {}
+
+    atm_ce = tuple(st.session_state.latest_atm_ce_candles)
+    atm_pe = tuple(st.session_state.latest_atm_pe_candles)
+    atm_strike = float(st.session_state.latest_atm_strike or 0.0)
+    atm_expiry = str(st.session_state.latest_atm_expiry or "")
+    if complete_nifty and atm_ce and atm_pe and atm_strike > 0:
+        assessment = assess_atm_confirmation(
+            complete_nifty,
+            completed_candles(atm_ce, now, interval),
+            completed_candles(atm_pe, now, interval),
+        )
+        side = (
+            "CE"
+            if assessment.signal == ATMConfirmationSignal.CONFIRM_CE
+            else "PE"
+            if assessment.signal == ATMConfirmationSignal.CONFIRM_PE
+            else "NONE"
+        )
+        premium = (
+            float(atm_ce[-1].close)
+            if side == "CE"
+            else float(atm_pe[-1].close)
+            if side == "PE"
+            else 0.0
+        )
+        output[ATM_ALGO] = {
+            "side": side,
+            "strike": atm_strike,
+            "expiry": atm_expiry,
+            "premium": premium,
+            "signal_key": _paper_signal_key(
+                ATM_ALGO,
+                signal_stamp,
+                side,
+                atm_strike,
+                atm_expiry,
+            ),
+            "signal": assessment.signal.value,
+        }
+
+    strike_window = tuple(st.session_state.latest_strike_window_candles)
+    if complete_nifty and len(strike_window) == 5:
+        assessment = assess_strike_window_confirmation(
+            complete_nifty,
+            _completed_strike_window(now, interval),
+        )
+        side = (
+            "CE"
+            if assessment.signal == StrikeWindowSignal.CONFIRM_CE
+            else "PE"
+            if assessment.signal == StrikeWindowSignal.CONFIRM_PE
+            else "NONE"
+        )
+        contract = directional_two_strike_contract(strike_window, side)
+        strike = float(contract.strike) if contract is not None else 0.0
+        expiry = str(contract.expiry) if contract is not None else ""
+        candles = (
+            contract.ce_candles
+            if contract is not None and side == "CE"
+            else contract.pe_candles
+            if contract is not None and side == "PE"
+            else tuple()
+        )
+        premium = float(candles[-1].close) if candles else 0.0
+        output[ATM_TWO_STRIKE_ALGO] = {
+            "side": side,
+            "strike": strike,
+            "expiry": expiry,
+            "premium": premium,
+            "signal_key": _paper_signal_key(
+                ATM_TWO_STRIKE_ALGO,
+                signal_stamp,
+                side,
+                strike,
+                expiry,
+            ),
+            "signal": assessment.signal.value,
+        }
+    return output
+
+
+def _render_paper_algo_status(strategy: str, update: Any, signal: str) -> None:
+    position = update.position
+    st.markdown(f"#### {strategy}")
+    status = f"OPEN {position.side}" if position else "FLAT"
+    metrics = st.columns(3)
+    metrics[0].metric("Paper status", status)
+    metrics[1].metric("Chart signal", signal)
+    metrics[2].metric("Quantity", PAPER_QUANTITY)
+    if position:
+        current_points = position.current_premium - position.entry_premium
+        st.write(
+            {
+                "Contract": f"NIFTY {position.strike:.0f} {position.side}",
+                "Expiry": position.expiry,
+                "Entry premium": f"₹{position.entry_premium:.2f}",
+                "Current premium": f"₹{position.current_premium:.2f}",
+                "Book profit": (
+                    f"₹{position.target_premium:.2f} "
+                    f"(+{position.target_premium - position.entry_premium:g} points)"
+                ),
+                "Stop loss": (
+                    f"₹{position.stop_premium:.2f} "
+                    f"(−{position.entry_premium - position.stop_premium:g} points)"
+                ),
+                "Open premium points": f"{current_points:+.2f}",
+                "Open paper P&L": f"₹{current_points * position.quantity:+,.2f}",
+                "Opened": position.opened_at.isoformat(),
+            }
+        )
+    if update.closed_trade is not None:
+        trade = update.closed_trade
+        message = (
+            f"{trade.exit_reason} {trade.premium_points:+.2f} points × {trade.quantity} "
+            f"= ₹{trade.paper_pnl:+,.2f} paper P&L."
+        )
+        if trade.paper_pnl >= 0:
+            st.success(message)
+        else:
+            st.warning(message)
+    else:
+        st.caption(update.message)
+
+
+@st.fragment(run_every="30s")
+def paper_algo_fragment() -> None:
+    st.caption(
+        f"Two independent paper books · {PAPER_QUANTITY} quantity each · "
+        f"+{float(st.session_state.paper_profit_points):g} premium-point booking · "
+        f"−{float(st.session_state.paper_stop_points):g} premium-point stop · no broker-order "
+        f"endpoint · maximum {int(st.session_state.paper_max_daily_trades)} completed trades "
+        "per algo/day. Paper P&L excludes brokerage, taxes and live fill slippage."
+    )
+    st.caption(
+        "The paper engine advances every 30 seconds while Command Center or Paper Algos is "
+        "open. If Streamlit sleeps, it resumes from the stored position without inventing "
+        "missed fills."
+    )
+    if not st.session_state.paper_algo_enabled:
+        st.info("Paper algorithms are paused in Settings.")
+        return
+    now = now_ist()
+    refresh_upstox_nifty_candles(now)
+    refresh_atm_option_candles(now)
+    refresh_strike_window_candles(now)
+    inputs = _paper_algo_inputs(now)
+    gate = gate_live_signals(now, market_schedule())
+    updates: dict[str, Any] = {}
+    for strategy in (ATM_ALGO, ATM_TWO_STRIKE_ALGO):
+        position = paper_algo_store().position(strategy)
+        values = inputs.get(strategy, {})
+        premium = _position_premium(position) if position is not None else float(
+            values.get("premium") or 0.0
+        )
+        updates[strategy] = advance_paper_algo(
+            paper_algo_store(),
+            strategy=strategy,
+            signal_side=str(values.get("side") or "NONE"),
+            signal_key=str(values.get("signal_key") or ""),
+            strike=float(values.get("strike") or (position.strike if position else 0.0)),
+            expiry=str(values.get("expiry") or (position.expiry if position else "")),
+            premium=premium,
+            now=now,
+            market_open=gate.allowed,
+            quantity=PAPER_QUANTITY,
+            profit_points=float(st.session_state.paper_profit_points),
+            stop_points=float(st.session_state.paper_stop_points),
+            maximum_hold_minutes=float(st.session_state.paper_max_hold_minutes),
+            cooldown_minutes=float(st.session_state.paper_cooldown_minutes),
+            maximum_daily_trades=int(st.session_state.paper_max_daily_trades),
+        )
+
+    left, right = st.columns(2, gap="large")
+    for column, strategy in ((left, ATM_ALGO), (right, ATM_TWO_STRIKE_ALGO)):
+        with column:
+            _render_paper_algo_status(
+                strategy,
+                updates[strategy],
+                str(inputs.get(strategy, {}).get("signal") or "WAITING"),
+            )
+    recent = paper_algo_store().recent_trades(limit=20)
+    with st.expander("Separate paper-algo trade ledger", expanded=False):
+        if recent:
+            st.dataframe(pd.DataFrame(recent), use_container_width=True, hide_index=True)
+        else:
+            st.info("No completed paper-algo trades yet.")
 
 
 @st.fragment(run_every="2s")
@@ -1019,7 +1333,7 @@ def nifty_upstox_chart_fragment() -> None:
         return
 
     now = now_ist()
-    refresh_market_data(now)
+    refresh_upstox_nifty_candles(now)
     interval = int(st.session_state.stable_interval_minutes)
     candles = technical_candles()
     if not candles:
@@ -1078,6 +1392,8 @@ def live_page() -> None:
     with panel:
         st.subheader("Nandi decision")
         live_engine_fragment()
+    st.subheader("Automatic paper trading — separate ATM and ATM±2 algos")
+    paper_algo_fragment()
     st.subheader("Live ATM option charts — CE and PE")
     atm_option_charts_fragment()
     st.divider()
@@ -1094,11 +1410,23 @@ def live_page() -> None:
     evidence_fragment()
 
 
+def paper_algos_page() -> None:
+    header(
+        "Automatic Paper Algos",
+        "Two isolated chart-confirmation paper books with fixed 130 quantity and no broker-order connection.",
+    )
+    paper_algo_fragment()
+    st.info(
+        "ATM Strategy Algo paper-buys the confirmed ATM contract. ATM ±2 Strategy Algo "
+        "paper-buys two strikes OTM: +2 CE on CE confirmation and −2 PE on PE confirmation."
+    )
+
+
 def history_page() -> None:
     header("History", "Persistent decisions and trade lifecycle transitions.")
     decisions = history_store().recent(500)
     trades = history_store().recent_trade_events(500)
-    dtab, ttab = st.tabs(["Decisions", "Trade lifecycle"])
+    dtab, ttab, ptab = st.tabs(["Decisions", "Trade lifecycle", "Paper algos"])
     with dtab:
         if decisions:
             st.dataframe(pd.DataFrame(decisions), use_container_width=True, hide_index=True, height=600)
@@ -1109,6 +1437,17 @@ def history_page() -> None:
             st.dataframe(pd.DataFrame(trades), use_container_width=True, hide_index=True, height=600)
         else:
             st.info("No lifecycle events stored yet.")
+    with ptab:
+        paper_trades = paper_algo_store().recent_trades(limit=500)
+        if paper_trades:
+            st.dataframe(
+                pd.DataFrame(paper_trades),
+                use_container_width=True,
+                hide_index=True,
+                height=600,
+            )
+        else:
+            st.info("No completed automatic paper-algo trades yet.")
 
 
 def replay_page() -> None:
@@ -1132,6 +1471,54 @@ def replay_page() -> None:
 
 def results_page() -> None:
     header("Results", "Completed Nandi V2 trades grouped by day, week and month.")
+    st.subheader("Automatic paper-algo comparison")
+    paper_trades = paper_algo_store().recent_trades(limit=10000)
+    if paper_trades:
+        paper_metrics = st.columns(5)
+        paper_wins = sum(float(row["Paper P&L"]) > 0 for row in paper_trades)
+        paper_metrics[0].metric("Completed paper trades", len(paper_trades))
+        paper_metrics[1].metric(
+            "Paper win rate",
+            f"{paper_wins / len(paper_trades) * 100:.1f}%",
+        )
+        paper_metrics[2].metric(
+            "Net paper P&L",
+            f"₹{sum(float(row['Paper P&L']) for row in paper_trades):+,.2f}",
+        )
+        paper_metrics[3].metric(
+            "ATM trades",
+            sum(row["Algo"] == ATM_ALGO for row in paper_trades),
+        )
+        paper_metrics[4].metric(
+            "ATM±2 trades",
+            sum(row["Algo"] == ATM_TWO_STRIKE_ALGO for row in paper_trades),
+        )
+        comparison = []
+        for strategy in (ATM_ALGO, ATM_TWO_STRIKE_ALGO):
+            rows = [row for row in paper_trades if row["Algo"] == strategy]
+            wins = sum(float(row["Paper P&L"]) > 0 for row in rows)
+            comparison.append(
+                {
+                    "Algo": strategy,
+                    "Trades": len(rows),
+                    "Wins": wins,
+                    "Losses": len(rows) - wins,
+                    "Win rate": round(wins / len(rows) * 100, 1) if rows else 0.0,
+                    "Premium points": round(sum(float(row["Points"]) for row in rows), 2),
+                    "Paper P&L": round(sum(float(row["Paper P&L"]) for row in rows), 2),
+                }
+            )
+        st.dataframe(pd.DataFrame(comparison), use_container_width=True, hide_index=True)
+        with st.expander("Automatic paper trade ledger"):
+            st.dataframe(pd.DataFrame(paper_trades), use_container_width=True, hide_index=True)
+    else:
+        st.info("The separate ATM and ATM±2 paper results will appear after their first exits.")
+    st.caption(
+        "Paper P&L = option premium points × 130 quantity. Brokerage, taxes, bid/ask slippage "
+        "and real fills are not included; this is not a broker order record."
+    )
+    st.divider()
+    st.subheader("Existing Nandi lifecycle results")
     trades = completed_trades(history_store().trade_events())
     if not trades:
         st.info("Daily, weekly and monthly results will appear after Nandi records its first completed trade lifecycle.")
@@ -1204,6 +1591,35 @@ def settings_page() -> None:
             1,
         )
         st.session_state.reversal_cooldown_minutes = st.slider("Reversal cooldown minutes", 0, 15, int(st.session_state.reversal_cooldown_minutes), 1)
+        st.subheader("Automatic paper algos")
+        st.session_state.paper_algo_enabled = st.toggle(
+            "Run ATM and ATM±2 paper algos",
+            value=bool(st.session_state.paper_algo_enabled),
+        )
+        st.number_input(
+            "Paper quantity (fixed)",
+            value=PAPER_QUANTITY,
+            step=1,
+            disabled=True,
+        )
+        st.session_state.paper_profit_points = float(
+            st.slider(
+                "Paper profit booking points",
+                8,
+                10,
+                int(st.session_state.paper_profit_points),
+                1,
+            )
+        )
+        st.session_state.paper_stop_points = float(
+            st.slider(
+                "Paper stop-loss points",
+                3,
+                4,
+                int(st.session_state.paper_stop_points),
+                1,
+            )
+        )
     with right:
         smtp = smtp_settings()
         st.subheader("Email alerts")
@@ -1235,6 +1651,7 @@ def sidebar() -> str:
         "Navigation",
         [
             "Command Center",
+            "Paper Algos",
             "Fundamental Desk",
             "Technical Lab",
             "OI & Execution",
@@ -1261,6 +1678,8 @@ if not st.session_state.logged_in:
 page = sidebar()
 if page == "Command Center":
     live_page()
+elif page == "Paper Algos":
+    paper_algos_page()
 elif page == "Fundamental Desk":
     fundamental_desk_page()
 elif page == "Technical Lab":

@@ -1,19 +1,99 @@
-from pathlib import Path
+from __future__ import annotations
 
-source = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
+import os
+from typing import Any
 
-replacements = {
-    'st.set_page_config(page_title="Nandi", page_icon="N"': 'st.set_page_config(page_title="Shiv", page_icon="S"',
-    '<div class="eyebrow">Nandi Live</div>': '<div class="eyebrow">Shiv Live</div>',
-    'header("Nandi", "Private NIFTY decision terminal': 'header("Shiv", "Private NIFTY decision terminal',
-    'st.sidebar.markdown("## Nandi")': 'st.sidebar.markdown("## Shiv")',
-    'Nandi decision': 'Shiv decision',
-    'Nandi recalculates': 'Shiv recalculates',
-    'Nandi confirms': 'Shiv confirms',
-    "Nandi's": "Shiv's",
-}
+import streamlit as st
 
-for old, new in replacements.items():
-    source = source.replace(old, new)
+from nandi_oi.auth import CredentialConfigurationError, LoginLockout
+from nandi_oi.configuration import is_configured_value
+from shiv_v1.ui import render_shiv_terminal
 
-exec(compile(source, "app.py", "exec"), globals(), globals())
+
+st.set_page_config(page_title="Shiv", page_icon="S", layout="wide", initial_sidebar_state="expanded")
+
+
+def secret_section(name: str) -> dict[str, Any]:
+    try:
+        value = st.secrets.get(name, {})
+        return dict(value) if value else {}
+    except Exception:
+        return {}
+
+
+def configured_auth() -> tuple[str | None, str | None, str]:
+    auth = secret_section("auth")
+    username = str(auth.get("username", ""))
+    password = str(auth.get("password", ""))
+    if not (is_configured_value(username) and is_configured_value(password)):
+        username = os.getenv("NANDI_AUTH_USERNAME", "")
+        password = os.getenv("NANDI_AUTH_PASSWORD", "")
+    if is_configured_value(username) and is_configured_value(password):
+        return username, password, ""
+    return None, None, "Authentication is not configured. Add [auth] username/password to Shiv Streamlit Secrets."
+
+
+def configured_upstox_token() -> str:
+    token = str(secret_section("upstox").get("access_token", ""))
+    if not is_configured_value(token):
+        token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
+    return token if is_configured_value(token) else ""
+
+
+def login_page() -> None:
+    st.markdown(
+        """
+        <div style="max-width:620px;margin:4rem auto 1rem auto;border:1px solid #dce8e1;border-radius:20px;padding:1.5rem;background:#fff">
+          <div style="font-size:.72rem;letter-spacing:.14em;font-weight:800;color:#126b3a;text-transform:uppercase">Shiv</div>
+          <div style="font-size:2rem;font-weight:850;letter-spacing:-.04em">Private research terminal</div>
+          <div style="color:#66756d;margin-top:.35rem">Experimental NIFTY decision system. Read-only market data and paper research only.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    username_expected, password_expected, auth_error = configured_auth()
+    _, middle, _ = st.columns([1, 1.1, 1])
+    with middle:
+        with st.form("shiv_login"):
+            username = st.text_input("Email or username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in to Shiv", use_container_width=True)
+        if submitted:
+            try:
+                result = LoginLockout(st.session_state).authenticate(
+                    username,
+                    password,
+                    username_expected,
+                    password_expected,
+                )
+            except CredentialConfigurationError:
+                st.error(auth_error)
+            else:
+                if result.authenticated:
+                    st.session_state.shiv_logged_in = True
+                    st.rerun()
+                elif result.locked:
+                    st.error("Too many failed attempts. Please retry later.")
+                else:
+                    st.error(f"Invalid credentials. {result.attempts_remaining} attempt(s) remaining.")
+        if auth_error:
+            st.warning(auth_error)
+
+
+if "shiv_logged_in" not in st.session_state:
+    st.session_state.shiv_logged_in = False
+
+if not st.session_state.shiv_logged_in:
+    login_page()
+    st.stop()
+
+access_token = configured_upstox_token()
+if not access_token:
+    st.error("Shiv needs the [upstox] access_token in this app's Streamlit Secrets to load read-only market data.")
+    st.stop()
+
+render_shiv_terminal(access_token)
+st.sidebar.divider()
+if st.sidebar.button("Sign out", use_container_width=True):
+    st.session_state.shiv_logged_in = False
+    st.rerun()

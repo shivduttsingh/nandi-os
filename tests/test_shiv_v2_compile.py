@@ -8,6 +8,9 @@ def test_shiv_v2_entrypoint_and_modules_compile():
         Path("shiv_v2/strategy.py"),
         Path("shiv_v2/replay.py"),
         Path("shiv_v2/history.py"),
+        Path("shiv_v2/segments.py"),
+        Path("shiv_v2/safety.py"),
+        Path("shiv_v2/live.py"),
         Path("shiv_v2/ui.py"),
     ):
         py_compile.compile(str(path), doraise=True)

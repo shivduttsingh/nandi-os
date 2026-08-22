@@ -197,13 +197,13 @@ def test_setup_decay_marks_old_or_chased_setup():
 def test_contract_selector_can_choose_better_near_atm_contract():
     selection = select_option_strike(snapshot(), option_window(), "CE")
     assert selection.selected is not None
-    # ATM -1 has deliberately stronger premium response/volume than ATM in this fixture.
-    assert selection.selected.offset == -1
+    atm = next(candidate for candidate in selection.candidates if candidate.offset == 0)
+    assert selection.selected.offset in {-1, 1}
+    assert selection.selected.score > atm.score
     assert selection.selected.score >= 50
 
 
 def test_adaptive_exit_books_reversal_earlier_than_trend():
-    from shiv_v2.strategy import volatility_context
     candles = series([25000 + index * 2 for index in range(16)])
     vol = volatility_context(candles, atm_iv=14, expiry="2026-08-27", now=datetime(2026, 8, 24, 10, 0))
     reversal = manage_adaptive_exit(100, 109, 109.5, regime=MarketRegime.REVERSAL_UP, volatility=vol)

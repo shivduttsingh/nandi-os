@@ -23,14 +23,6 @@ from nandi_v2.charting import (
 from nandi_v2.confluence import ConfluenceDecision, apply_confluence_gate, combine_decision
 from nandi_v2.email_alerts import SMTPEmailAlertSink, SMTPSettings, is_entry_alert
 from nandi_v2.engine import decide, option_leg_for, strike_evidence_rows
-from nandi_v2.fundamentals import (
-    FUNDAMENTAL_CATALOGUE,
-    FundamentalAssessment,
-    FundamentalBias,
-    FundamentalFactor,
-    assess_fundamentals,
-    fundamental_rows,
-)
 from nandi_v2.history import DecisionHistory
 from nandi_v2.lifecycle import TradeState, TradeStatus, advance_trade_state
 from nandi_v2.models import Decision, DecisionAction, MarketContext, OptionChainSnapshot
@@ -186,7 +178,6 @@ def init_state() -> None:
         "latest_microstructure_decision": None,
         "latest_confirmed_decision": None,
         "latest_technical_assessment": None,
-        "latest_fundamental_assessment": None,
         "latest_confluence_decision": None,
         "candidate_side": "",
         "candidate_count": 0,
@@ -319,12 +310,10 @@ def completed_technical_candles(now: datetime) -> tuple[Any, ...]:
     )
 
 
-def pillar_assessments(now: datetime) -> tuple[TechnicalAssessment, FundamentalAssessment]:
+def technical_assessment(now: datetime) -> TechnicalAssessment:
     technical = assess_technicals(completed_technical_candles(now))
-    fundamental = assess_fundamentals(history_store().latest_fundamental_factors(), now)
     st.session_state.latest_technical_assessment = technical
-    st.session_state.latest_fundamental_assessment = fundamental
-    return technical, fundamental
+    return technical
 
 
 def refresh_market_data(now: datetime) -> None:
@@ -502,11 +491,10 @@ def build_live_decision(now: datetime) -> tuple[OptionChainSnapshot | None, Deci
     context = market_context(now)
     history_store().append_market_frame(snapshot, context)
     raw = decide(snapshot, context, trade_threshold=float(st.session_state.trade_threshold), prepare_threshold=max(60.0, float(st.session_state.trade_threshold) - 10.0))
-    technical, fundamental = pillar_assessments(now)
+    technical = technical_assessment(now)
     confluence = combine_decision(
         raw,
         technical,
-        fundamental,
         minimum_setup_score=float(st.session_state.trade_threshold),
     )
     combined = apply_confluence_gate(raw, confluence)
@@ -607,10 +595,10 @@ def decision_card(decision: Decision, snapshot: OptionChainSnapshot, gate: Any) 
         execution_plan = f'''<div class="label" style="margin-top:.75rem">Option execution plan</div><div class="grid"><div class="cell"><span class="label">Contract</span><b>NIFTY {contract_strike:.0f} {escape(contract_side)}</b></div><div class="cell"><span class="label">Expiry</span><b>{escape(contract_expiry)}</b></div><div class="cell"><span class="label">Current premium</span><b>₹{fmt(premium_current)}</b></div><div class="cell"><span class="label">Bid / Ask</span><b>{quote}</b></div><div class="cell"><span class="label">Buy near</span><b>₹{fmt(premium_entry)}</b></div><div class="cell"><span class="label">Premium stop · 5%</span><b>₹{fmt(premium_stop)}</b></div><div class="cell"><span class="label">Premium target 1 · 1.5R</span><b>₹{fmt(premium_target_1)}</b></div><div class="cell"><span class="label">Premium target 2 · 2.5R</span><b>₹{fmt(premium_target_2)}</b></div></div>'''
     else:
         execution_plan = '<div class="blocker">No executable option contract until Nandi confirms BUY CE or BUY PE.</div>'
-    agreement = confluence.agreement if confluence else "Waiting for pillar assessment"
+    agreement = confluence.agreement if confluence else "Waiting for technical + OI assessment"
     score_line = (
         f"Confluence {confluence.setup_score:.1f}/100 · OI {confluence.microstructure_score:.1f} · "
-        f"Technical {confluence.technical_score:.1f} · Fundamental {confluence.fundamental_score:.1f}"
+        f"Technical {confluence.technical_score:.1f}"
         if confluence else f"Setup score {decision.score:.1f}/100"
     )
     return f'''<div class="decision"><div class="label">Stable trade state</div><div class="value {displayed_class}">{escape(displayed_action)}</div><div class="note">{escape(score_line)} · {escape(gate.status.label)}</div><div class="note">{escape(agreement)} · Setup quality is not a guaranteed win probability.</div>{execution_plan}<div class="label" style="margin-top:.75rem">NIFTY confirmation levels</div><div class="grid"><div class="cell"><span class="label">Spot entry</span><b>{fmt(spot_entry)}</b></div><div class="cell"><span class="label">Spot stop</span><b>{fmt(spot_stop)}</b></div><div class="cell"><span class="label">Spot target 1</span><b>{fmt(spot_target_1)}</b></div><div class="cell"><span class="label">Spot target 2</span><b>{fmt(spot_target_2)}</b></div></div><div style="margin-top:.75rem">{reasons}{blockers}</div><div class="trade"><span class="label">Lifecycle · min {st.session_state.minimum_hold_minutes}m / max {st.session_state.maximum_hold_minutes}m</span><b>{escape(trade.status.value)}</b><div class="note">{escape(trade.reason or 'No active trade.')}</div></div><div class="note" style="margin-top:.65rem">OI: {snapshot.timestamp.astimezone(IST).strftime('%H:%M:%S')} IST · {escape(snapshot.source)} · Confirm the live quote before manual execution.</div></div>'''
@@ -835,28 +823,22 @@ def evidence_fragment() -> None:
 
 
 @st.fragment(run_every="2s")
-def pillar_summary_fragment() -> None:
+def decision_summary_fragment() -> None:
     technical: TechnicalAssessment | None = st.session_state.latest_technical_assessment
-    fundamental: FundamentalAssessment | None = st.session_state.latest_fundamental_assessment
     micro: Decision | None = st.session_state.latest_microstructure_decision
     confluence: ConfluenceDecision | None = st.session_state.latest_confluence_decision
-    columns = st.columns(4)
+    columns = st.columns(3)
     columns[0].metric(
-        "Fundamental",
-        fundamental.direction.value if fundamental else "WAITING",
-        f"{fundamental.coverage:.0f}% fresh coverage" if fundamental else None,
-    )
-    columns[1].metric(
         "Technical",
         technical.direction.value if technical else "WAITING",
         f"{technical.coverage:.0f}% indicator coverage" if technical else None,
     )
-    columns[2].metric(
+    columns[1].metric(
         "OI & execution",
         micro.action.value if micro else "WAITING",
         f"{micro.score:.1f}/100" if micro else None,
     )
-    columns[3].metric(
+    columns[2].metric(
         "Unified gate",
         confluence.action.value if confluence else "WAITING",
         f"{confluence.setup_score:.1f}/100" if confluence else None,
@@ -866,92 +848,6 @@ def pillar_summary_fragment() -> None:
             st.warning("Unified gate: " + " | ".join(confluence.blockers[:3]))
         else:
             st.success(confluence.agreement)
-
-
-def fundamental_desk_page() -> None:
-    now = now_ist()
-    current = {factor.key: factor for factor in history_store().latest_fundamental_factors()}
-    assessment = assess_fundamentals(tuple(current.values()), now)
-    header(
-        "Fundamental Desk",
-        "Global, macro, flows, heavyweight earnings and event-risk inputs. Every factor must show its source and freshness.",
-    )
-    metrics = st.columns(4)
-    metrics[0].metric("Bias", assessment.direction.value)
-    metrics[1].metric("Fresh coverage", f"{assessment.coverage:.0f}%")
-    metrics[2].metric("Bullish weight", f"{assessment.bullish_score:.1f}")
-    metrics[3].metric("Bearish weight", f"{assessment.bearish_score:.1f}")
-    st.dataframe(pd.DataFrame(fundamental_rows(assessment, now)), use_container_width=True, hide_index=True)
-    if assessment.blockers:
-        st.warning(" | ".join(assessment.blockers))
-
-    st.subheader("Record a sourced market view")
-    st.caption(
-        "This first version accepts an authenticated research snapshot. It does not invent news or silently scrape an unlicensed feed. "
-        "Automated authorised providers can write to the same factor contract later."
-    )
-    with st.form("fundamental_snapshot_form"):
-        entries: list[tuple[Any, str, float, float, str, str]] = []
-        for definition in FUNDAMENTAL_CATALOGUE:
-            existing = current.get(definition.key)
-            with st.expander(f"{definition.category} · {definition.name}", expanded=False):
-                st.caption(definition.description)
-                left, middle, right = st.columns([1, 1, 1])
-                options = [item.value for item in FundamentalBias]
-                selected = existing.bias.value if existing else FundamentalBias.UNKNOWN.value
-                bias = left.selectbox(
-                    "Bias",
-                    options,
-                    index=options.index(selected),
-                    key=f"fundamental_bias_{definition.key}",
-                )
-                impact = middle.slider(
-                    "Impact",
-                    0,
-                    100,
-                    int(existing.impact) if existing else 50,
-                    5,
-                    key=f"fundamental_impact_{definition.key}",
-                )
-                confidence = right.slider(
-                    "Evidence confidence",
-                    0,
-                    100,
-                    int(existing.confidence * 100) if existing else 60,
-                    5,
-                    key=f"fundamental_confidence_{definition.key}",
-                )
-                source = st.text_input(
-                    "Source",
-                    value=existing.source if existing else "Manual research input",
-                    key=f"fundamental_source_{definition.key}",
-                )
-                note = st.text_input(
-                    "Evidence note",
-                    value=existing.note if existing else "",
-                    key=f"fundamental_note_{definition.key}",
-                )
-                entries.append((definition, bias, float(impact), float(confidence), source, note))
-        saved = st.form_submit_button("Save fundamental snapshot", type="primary", use_container_width=True)
-    if saved:
-        factors = tuple(
-            FundamentalFactor(
-                key=definition.key,
-                name=definition.name,
-                category=definition.category,
-                bias=FundamentalBias(bias),
-                impact=impact,
-                confidence=confidence / 100.0,
-                observed_at=now,
-                max_age_minutes=definition.max_age_minutes,
-                source=source.strip() or "Manual research input",
-                note=note.strip(),
-            )
-            for definition, bias, impact, confidence, source, note in entries
-        )
-        history_store().append_fundamental_factors(factors, recorded_at=now)
-        st.success("Fundamental snapshot saved. The unified gate will use it on the next live evaluation.")
-        st.rerun()
 
 
 def technical_lab_page() -> None:
@@ -1064,7 +960,7 @@ def nifty_upstox_chart_fragment() -> None:
 
 
 def live_page() -> None:
-    header("Command Center", "One decision gate combining fundamental context, technical families, live OI evidence and a stable risk lifecycle.")
+    header("Command Center", "One decision gate combining technical families, live OI evidence and a stable risk lifecycle.")
     controls = st.columns([1, 1, 1, 2])
     if controls[0].button("Refresh NSE now", type="primary", use_container_width=True):
         st.session_state.force_refresh = True
@@ -1088,8 +984,8 @@ def live_page() -> None:
         "It has no broker-order connection."
     )
     strike_window_charts_fragment()
-    st.subheader("Three-pillar agreement")
-    pillar_summary_fragment()
+    st.subheader("OI + technical agreement")
+    decision_summary_fragment()
     st.subheader("Live option-chain evidence")
     evidence_fragment()
 
@@ -1219,12 +1115,11 @@ def settings_page() -> None:
             "Upstox candle feed": "Configured" if configured_upstox_token() else "Not configured",
             "Stable timeframe": f"{st.session_state.stable_interval_minutes} minutes",
             "Forming candle": "Displayed — excluded from completed-candle structure",
-            "Unified entry gate": "Fundamental + technical + OI required",
+            "Unified entry gate": "Technical + OI required",
             "Final BUY threshold": f"{st.session_state.trade_threshold:.0f}/100 unified setup quality",
             "Option execution": f"Selected-contract NSE quote · {st.session_state.oi_refresh_seconds}s refresh · 5% premium stop · 1.5R / 2.5R targets",
             "Holding window": f"{st.session_state.minimum_hold_minutes}–{st.session_state.maximum_hold_minutes} minutes unless stop/target exits first",
             "Technical model": "25 indicators grouped into five non-duplicative families",
-            "Fundamental model": "Sourced and freshness-gated; unknown inputs block new entries",
         })
 
 
@@ -1235,7 +1130,6 @@ def sidebar() -> str:
         "Navigation",
         [
             "Command Center",
-            "Fundamental Desk",
             "Technical Lab",
             "OI & Execution",
             "History",
@@ -1261,8 +1155,6 @@ if not st.session_state.logged_in:
 page = sidebar()
 if page == "Command Center":
     live_page()
-elif page == "Fundamental Desk":
-    fundamental_desk_page()
 elif page == "Technical Lab":
     technical_lab_page()
 elif page == "OI & Execution":

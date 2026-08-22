@@ -2,7 +2,6 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from nandi_v2.confluence import apply_confluence_gate, combine_decision
-from nandi_v2.fundamentals import FundamentalAssessment, FundamentalBias
 from nandi_v2.models import Decision, DecisionAction, ScoreBreakdown, TradeLevels
 from nandi_v2.technical import TechnicalAssessment, TechnicalDirection
 
@@ -30,67 +29,69 @@ def base(action: DecisionAction = DecisionAction.BUY_CE) -> Decision:
 def technical(direction: TechnicalDirection) -> TechnicalAssessment:
     bullish = 80.0 if direction == TechnicalDirection.BULLISH else 20.0
     bearish = 80.0 if direction == TechnicalDirection.BEARISH else 20.0
-    return TechnicalAssessment(direction, max(bullish, bearish), bullish, bearish, 90.0, tuple(), tuple())
-
-
-def fundamental(direction: FundamentalBias) -> FundamentalAssessment:
-    bullish = 75.0 if direction == FundamentalBias.BULLISH else 15.0
-    bearish = 75.0 if direction == FundamentalBias.BEARISH else 15.0
-    if direction == FundamentalBias.NEUTRAL:
-        bullish = bearish = 20.0
-    return FundamentalAssessment(direction, 70.0, bullish, bearish, 100.0, tuple())
-
-
-def test_all_three_pillars_approve_the_existing_oi_side():
-    combined = combine_decision(
-        base(),
-        technical(TechnicalDirection.BULLISH),
-        fundamental(FundamentalBias.BULLISH),
+    return TechnicalAssessment(
+        direction,
+        max(bullish, bearish),
+        bullish,
+        bearish,
+        90.0,
+        tuple(),
+        tuple(),
     )
+
+
+def test_oi_and_technical_approve_the_existing_oi_side():
+    combined = combine_decision(base(), technical(TechnicalDirection.BULLISH))
     assert combined.action == DecisionAction.BUY_CE
     assert combined.approved
     assert not combined.blockers
+    assert combined.agreement == "Technical + OI aligned"
 
 
 def test_technical_conflict_vetoes_a_buy_without_flipping_it():
     raw = base()
-    combined = combine_decision(raw, technical(TechnicalDirection.BEARISH), fundamental(FundamentalBias.BULLISH))
+    combined = combine_decision(raw, technical(TechnicalDirection.BEARISH))
     gated = apply_confluence_gate(raw, combined)
     assert combined.action == DecisionAction.NO_TRADE
     assert gated.action == DecisionAction.NO_TRADE
     assert any("conflicts" in blocker for blocker in gated.blockers)
 
 
-def test_unknown_fundamental_pillar_blocks_a_new_entry():
-    unknown = FundamentalAssessment(
-        FundamentalBias.UNKNOWN,
+def test_unavailable_technical_pillar_blocks_a_new_entry():
+    unavailable = TechnicalAssessment(
+        TechnicalDirection.UNAVAILABLE,
         0.0,
         0.0,
         0.0,
         0.0,
         tuple(),
-        blockers=("Fundamental feed missing",),
+        tuple(),
+        blockers=("Technical feed missing",),
     )
-    combined = combine_decision(base(), technical(TechnicalDirection.BULLISH), unknown)
+    combined = combine_decision(base(), unavailable)
     assert combined.action == DecisionAction.NO_TRADE
-    assert "Fundamental feed missing" in combined.blockers
+    assert "Technical feed missing" in combined.blockers
 
 
-def test_fresh_neutral_fundamentals_do_not_overrule_technical_and_oi_alignment():
-    combined = combine_decision(
-        base(),
-        technical(TechnicalDirection.BULLISH),
-        fundamental(FundamentalBias.NEUTRAL),
+def test_neutral_technical_pillar_blocks_directional_entry():
+    neutral = TechnicalAssessment(
+        TechnicalDirection.NEUTRAL,
+        50.0,
+        35.0,
+        35.0,
+        90.0,
+        tuple(),
+        tuple(),
     )
-    assert combined.action == DecisionAction.BUY_CE
-    assert combined.approved
+    combined = combine_decision(base(), neutral)
+    assert combined.action == DecisionAction.NO_TRADE
+    assert any("sideways / neutral" in blocker for blocker in combined.blockers)
 
 
 def test_confluence_never_invents_a_trade_from_oi_no_trade():
     combined = combine_decision(
         base(DecisionAction.NO_TRADE),
         technical(TechnicalDirection.BULLISH),
-        fundamental(FundamentalBias.BULLISH),
     )
     assert combined.action == DecisionAction.NO_TRADE
     assert not combined.approved
@@ -98,14 +99,17 @@ def test_confluence_never_invents_a_trade_from_oi_no_trade():
 
 def test_final_unified_score_must_reach_buy_threshold():
     weak_technical = TechnicalAssessment(
-        TechnicalDirection.BULLISH, 55.0, 55.0, 20.0, 90.0, tuple(), tuple(),
-    )
-    neutral = FundamentalAssessment(
-        FundamentalBias.NEUTRAL, 50.0, 20.0, 20.0, 100.0, tuple(),
+        TechnicalDirection.BULLISH,
+        55.0,
+        55.0,
+        20.0,
+        90.0,
+        tuple(),
+        tuple(),
     )
     raw = replace(base(), score=75.0)
 
-    combined = combine_decision(raw, weak_technical, neutral)
+    combined = combine_decision(raw, weak_technical)
 
     assert combined.action == DecisionAction.NO_TRADE
     assert any("Unified setup score" in blocker for blocker in combined.blockers)
@@ -117,7 +121,6 @@ def test_prepare_state_remains_visible_below_final_buy_threshold():
     combined = combine_decision(
         developing,
         technical(TechnicalDirection.BULLISH),
-        fundamental(FundamentalBias.NEUTRAL),
     )
 
     assert combined.action == DecisionAction.PREPARE_CE

@@ -139,9 +139,9 @@ def render_after_hours(access_token: str) -> None:
     st.markdown(
         """
         <div class="closed-hero">
-          <div class="kicker">Shiv · Research Mode</div>
-          <div class="title">Market closed. Data visible, decisions locked.</div>
-          <div class="copy">Shiv still displays the last available NIFTY and option-market data after hours. Every stale value is research/display only: it cannot create a CE/PE confirmation, persistence update, new paper entry, or live setup.</div>
+          <div class="kicker">Shiv Advanced V2 · Research Mode</div>
+          <div class="title">Market closed. Data visible, V2 decisions locked.</div>
+          <div class="copy">Advanced V2 is installed. Shiv still displays the last available NIFTY and option-market data after hours, while regime/time/volatility/M-W/contract-selection and paper-entry logic stay locked until fresh regular-session data resumes.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -151,9 +151,9 @@ def render_after_hours(access_token: str) -> None:
     session_metrics[0].metric("Session", status.label)
     session_metrics[1].metric("Current IST", now.strftime("%H:%M"))
     session_metrics[2].metric("Next NSE open", status.next_open.strftime("%d %b · %H:%M"))
-    session_metrics[3].metric("Live decision gate", "LOCKED")
+    session_metrics[3].metric("Live V2 gate", "LOCKED")
 
-    st.info(f"{status.reason} Stale/last-session data remains visible below, but Shiv will not trade or confirm a side from it.")
+    st.info(f"{status.reason} Stale/last-session data remains visible below, but Shiv V2 will not trade or confirm a side from it.")
 
     snapshot = None
     try:
@@ -181,7 +181,7 @@ def render_after_hours(access_token: str) -> None:
             st.dataframe(frame, use_container_width=True, hide_index=True)
             st.caption("LTP, OI, volume and quotes are last-published values. After-hours changes are intentionally not calculated or presented as fresh movement.")
 
-    data_tab, chart_tab, status_tab = st.tabs(["Last market data", "Last charts", "Advanced V1 status"])
+    data_tab, chart_tab, status_tab = st.tabs(["Last market data", "Last charts", "Advanced V2 status"])
 
     with data_tab:
         if snapshot is None:
@@ -189,7 +189,7 @@ def render_after_hours(access_token: str) -> None:
         else:
             st.write(
                 "The table above remains visible so you can review where NIFTY, ATM strikes, OI levels and option premiums finished the session. "
-                "The live Shiv decision engine remains completely locked until regular-market data becomes fresh again."
+                "The live Shiv V2 decision engine remains completely locked until regular-market data becomes fresh again."
             )
 
     with chart_tab:
@@ -226,26 +226,29 @@ def render_after_hours(access_token: str) -> None:
         with left:
             st.markdown(
                 """
-                **Live engine ready for next session**
+                **Adaptive decision engine ready**
 
-                - Market-regime classification
+                - Regime-specific thresholds
                 - 1m / 3m / 5m / 15m NIFTY confirmation
-                - ATM + ATM ±2 option-premium evidence
-                - OI / execution confirmation
-                - Developing → Ready → Confirm → Strong → A+ stages
+                - Opening / midday / closing time-of-day rules
+                - ATR / IV / expiry context
+                - M/W structure confirmation
+                - ATM + ATM ±2 + OI evidence
                 """
             )
         with right:
             st.markdown(
                 """
-                **Risk and validation controls**
+                **Execution and validation ready**
 
-                - Persistence / anti-flip filter
-                - No-trade engine
-                - Pullback / breakout entry timing
-                - Dynamic paper stop and target ladder
-                - Similar-setup results only from recorded paper outcomes
+                - Intelligent ATM/near-ATM contract selector
+                - False-breakout / premium-divergence filter
+                - Setup expiry and MISSED / DO NOT CHASE states
+                - Adaptive regime/volatility paper exits
+                - Outcome-based calibration
+                - Chronological walk-forward validation
                 """
             )
+        st.caption("Setup quality, M/W confidence and contract score are evidence measures, not probabilities. Historical win-rate metrics require completed outcomes.")
 
-    st.caption("At the next regular NSE session, Shiv automatically returns to the full live Advanced V1 terminal when fresh data is available.")
+    st.caption("At the next regular NSE session, Shiv automatically returns to the full live Advanced V2 terminal when fresh data is available.")

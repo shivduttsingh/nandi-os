@@ -53,8 +53,11 @@ def render_strike_window_charts(
 
     expiry = series[0].expiry
     metrics = st.columns(5)
-    metrics[0].metric("ATM ±2 strategy", assessment.signal.value)
-    metrics[1].metric("Agreement", f"{assessment.agreement_score:.1f}/100")
+    metrics[0].metric(
+        "ATM ±2 status",
+        assessment.status_label or assessment.signal.value,
+    )
+    metrics[1].metric("Setup quality", f"{assessment.agreement_score:.1f}/100")
     metrics[2].metric(
         "NIFTY move",
         "—"
@@ -73,9 +76,10 @@ def render_strike_window_charts(
         if assessment.pe_median_change_pct is None
         else f"{assessment.pe_median_change_pct:+.2f}%",
     )
+
     message = (
-        f"{assessment.reason} Agreement strength: {assessment.agreement_score:.1f}/100. "
-        "This is a paper-validation reading, not a win probability or an order instruction."
+        f"{assessment.reason} Setup quality: {assessment.agreement_score:.1f}/100. "
+        "This is a paper-validation setup score, not a win probability or an order instruction."
     )
     if assessment.signal in {
         StrikeWindowSignal.CONFIRM_CE,
@@ -86,12 +90,55 @@ def render_strike_window_charts(
         st.warning(message)
     else:
         st.info(message)
+
+    relative = (
+        "—"
+        if assessment.relative_premium_strength_pct is None
+        else f"{assessment.relative_premium_strength_pct:+.2f}%"
+    )
+    efficiency = (
+        "—"
+        if assessment.trend_efficiency is None
+        else f"{assessment.trend_efficiency:.2f}"
+    )
+    st.caption(
+        f"Weighted strike dominance: {assessment.weighted_dominance_pct:.0f}% · "
+        f"CE−PE relative premium strength: {relative} · "
+        f"NIFTY structure: {assessment.nifty_structure} · "
+        f"OI: {assessment.oi_confirmation} · "
+        f"Volume/liquidity: {assessment.volume_confirmation} · "
+        f"VWAP: {assessment.vwap_confirmation} · "
+        f"Trend efficiency: {efficiency} · "
+        f"Persistence: {assessment.persistence_bars}/2."
+    )
     st.caption(
         f"Positive premium breadth: CE {assessment.ce_positive_strikes}/5 · "
         f"PE {assessment.pe_positive_strikes}/5 · strongest side dominates "
-        f"{assessment.dominant_strikes}/5 matching strikes. A confirmation requires at least "
-        "four of five strikes plus the matching NIFTY direction."
+        f"{assessment.dominant_strikes}/5 raw matching strikes. Final confirmation still "
+        "requires at least four positive strikes, ≥70% weighted dominance, matching "
+        "NIFTY direction/structure, and two consecutive completed evaluations."
     )
+
+    if assessment.component_scores:
+        score_maxima = {
+            "ATM premium": 20.0,
+            "Weighted ATM ±2": 20.0,
+            "NIFTY structure": 20.0,
+            "OI confirmation": 15.0,
+            "Volume": 10.0,
+            "VWAP": 5.0,
+            "Trend strength": 5.0,
+            "Persistence": 5.0,
+        }
+        with st.expander("ATM ±2 confirmation score breakdown", expanded=False):
+            for label, value in assessment.component_scores:
+                maximum = score_maxima[label]
+                st.progress(min(1.0, max(0.0, value / maximum)))
+                st.caption(f"{label}: {value:.1f}/{maximum:.0f} points")
+            if assessment.blockers:
+                st.markdown("**Current blockers**")
+                for blocker in assessment.blockers:
+                    st.write(f"• {blocker}")
 
     ce_column, pe_column = st.columns(2, gap="large")
     with ce_column:

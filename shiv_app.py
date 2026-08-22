@@ -11,7 +11,7 @@ from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
 from nandi_oi.market_schedule import MarketSchedule
 from shiv_v1.after_hours import render_after_hours
-from shiv_v2.ui import render_shiv_terminal
+from shiv_v2.live import render_shiv_terminal
 
 
 IST = ZoneInfo("Asia/Kolkata")

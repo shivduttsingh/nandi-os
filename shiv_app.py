@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
+from nandi_oi.market_schedule import MarketSchedule
+from shiv_v1.after_hours import render_after_hours
 from shiv_v1.ui import render_shiv_terminal
 
 
+IST = ZoneInfo("Asia/Kolkata")
 st.set_page_config(page_title="Shiv", page_icon="S", layout="wide", initial_sidebar_state="expanded")
 
 
@@ -92,7 +97,12 @@ if not access_token:
     st.error("Shiv needs the [upstox] access_token in this app's Streamlit Secrets to load read-only market data.")
     st.stop()
 
-render_shiv_terminal(access_token)
+session = MarketSchedule().status(datetime.now(IST))
+if session.is_open:
+    render_shiv_terminal(access_token)
+else:
+    render_after_hours(access_token)
+
 st.sidebar.divider()
 if st.sidebar.button("Sign out", use_container_width=True):
     st.session_state.shiv_logged_in = False

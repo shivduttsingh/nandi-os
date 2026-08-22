@@ -1,0 +1,126 @@
+name: patch-remove-fundamental
+
+on:
+  push:
+    branches:
+      - agent/remove-fundamental-desk
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/remove-fundamental-desk
+      - name: Remove inactive fundamental UI and wiring
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('app.py')
+          text = path.read_text()
+
+          def sub(pattern: str, replacement: str, label: str, flags: int = 0) -> None:
+              global text
+              text, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one replacement, got {count}')
+
+          sub(
+              r'from nandi_v2\.fundamentals import \(\n.*?\n\)\n',
+              '',
+              'fundamental import',
+              re.S,
+          )
+
+          old = '        "latest_fundamental_assessment": None,\n'
+          if old not in text:
+              raise SystemExit('fundamental session state line missing')
+          text = text.replace(old, '', 1)
+
+          sub(
+              r'def pillar_assessments\(now: datetime\) -> tuple\[TechnicalAssessment, FundamentalAssessment\]:\n.*?\n\n(?=def refresh_market_data)',
+              'def technical_assessment(now: datetime) -> TechnicalAssessment:\n'
+              '    technical = assess_technicals(completed_technical_candles(now))\n'
+              '    st.session_state.latest_technical_assessment = technical\n'
+              '    return technical\n\n\n',
+              'pillar assessment',
+              re.S,
+          )
+
+          old = '''    technical, fundamental = pillar_assessments(now)\n    confluence = combine_decision(\n        raw,\n        technical,\n        fundamental,\n        minimum_setup_score=float(st.session_state.trade_threshold),\n    )'''
+          new = '''    technical = technical_assessment(now)\n    confluence = combine_decision(\n        raw,\n        technical,\n        minimum_setup_score=float(st.session_state.trade_threshold),\n    )'''
+          if old not in text:
+              raise SystemExit('build_live_decision confluence block missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    agreement = confluence.agreement if confluence else "Waiting for pillar assessment"\n    score_line = (\n        f"Confluence {confluence.setup_score:.1f}/100 · OI {confluence.microstructure_score:.1f} · "\n        f"Technical {confluence.technical_score:.1f} · Fundamental {confluence.fundamental_score:.1f}"\n        if confluence else f"Setup score {decision.score:.1f}/100"\n    )'''
+          new = '''    agreement = confluence.agreement if confluence else "Waiting for technical + OI assessment"\n    score_line = (\n        f"Confluence {confluence.setup_score:.1f}/100 · OI {confluence.microstructure_score:.1f} · "\n        f"Technical {confluence.technical_score:.1f}"\n        if confluence else f"Setup score {decision.score:.1f}/100"\n    )'''
+          if old not in text:
+              raise SystemExit('decision-card confluence block missing')
+          text = text.replace(old, new, 1)
+
+          replacement = '''@st.fragment(run_every="2s")\ndef decision_summary_fragment() -> None:\n    technical: TechnicalAssessment | None = st.session_state.latest_technical_assessment\n    micro: Decision | None = st.session_state.latest_microstructure_decision\n    confluence: ConfluenceDecision | None = st.session_state.latest_confluence_decision\n    columns = st.columns(3)\n    columns[0].metric(\n        "Technical",\n        technical.direction.value if technical else "WAITING",\n        f"{technical.coverage:.0f}% indicator coverage" if technical else None,\n    )\n    columns[1].metric(\n        "OI & execution",\n        micro.action.value if micro else "WAITING",\n        f"{micro.score:.1f}/100" if micro else None,\n    )\n    columns[2].metric(\n        "Unified gate",\n        confluence.action.value if confluence else "WAITING",\n        f"{confluence.setup_score:.1f}/100" if confluence else None,\n    )\n    if confluence:\n        if confluence.blockers:\n            st.warning("Unified gate: " + " | ".join(confluence.blockers[:3]))\n        else:\n            st.success(confluence.agreement)\n\n\ndef technical_lab_page() -> None:'''
+          sub(
+              r'@st\.fragment\(run_every="2s"\)\ndef pillar_summary_fragment\(\) -> None:\n.*?\n\ndef technical_lab_page\(\) -> None:',
+              replacement,
+              'pillar summary and Fundamental Desk',
+              re.S,
+          )
+
+          old = '    header("Command Center", "One decision gate combining fundamental context, technical families, live OI evidence and a stable risk lifecycle.")'
+          new = '    header("Command Center", "One decision gate combining technical families, live OI evidence and a stable risk lifecycle.")'
+          if old not in text:
+              raise SystemExit('Command Center header missing')
+          text = text.replace(old, new, 1)
+
+          old = '    st.subheader("Three-pillar agreement")\n    pillar_summary_fragment()'
+          new = '    st.subheader("OI + technical agreement")\n    decision_summary_fragment()'
+          if old not in text:
+              raise SystemExit('Command Center pillar summary missing')
+          text = text.replace(old, new, 1)
+
+          old = '            "Unified entry gate": "Fundamental + technical + OI required",\n'
+          new = '            "Unified entry gate": "Technical + OI required",\n'
+          if old not in text:
+              raise SystemExit('Settings unified gate line missing')
+          text = text.replace(old, new, 1)
+
+          old = '            "Fundamental model": "Sourced and freshness-gated; unknown inputs block new entries",\n'
+          if old not in text:
+              raise SystemExit('Settings fundamental model line missing')
+          text = text.replace(old, '', 1)
+
+          old = '            "Fundamental Desk",\n'
+          if old not in text:
+              raise SystemExit('Fundamental Desk navigation item missing')
+          text = text.replace(old, '', 1)
+
+          old = 'elif page == "Fundamental Desk":\n    fundamental_desk_page()\n'
+          if old not in text:
+              raise SystemExit('Fundamental Desk route missing')
+          text = text.replace(old, '', 1)
+
+          leftovers = [line for line in text.splitlines() if 'fundamental' in line.lower()]
+          if leftovers:
+              raise SystemExit('Unexpected fundamental references remain in app.py: ' + ' | '.join(leftovers[:8]))
+
+          path.write_text(text)
+          PY
+
+          python -m py_compile app.py nandi_v2/*.py pages/*.py
+          pytest -q
+
+          rm .github/workflows/patch-remove-fundamental.yml
+          git config user.name "nandi-maintenance"
+          git config user.email "nandi-maintenance@users.noreply.github.com"
+          git add app.py .github/workflows/patch-remove-fundamental.yml
+          git commit -m "Remove Fundamental Desk from active Nandi UI"
+          git push origin HEAD:agent/remove-fundamental-desk

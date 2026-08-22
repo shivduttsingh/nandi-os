@@ -11,7 +11,7 @@ from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
 from nandi_oi.market_schedule import MarketSchedule
 from shiv_v1.after_hours import render_after_hours
-from shiv_v1.ui import render_shiv_terminal
+from shiv_v2.ui import render_shiv_terminal
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -51,7 +51,7 @@ def login_page() -> None:
         <div style="max-width:620px;margin:4rem auto 1rem auto;border:1px solid #dce8e1;border-radius:20px;padding:1.5rem;background:#fff">
           <div style="font-size:.72rem;letter-spacing:.14em;font-weight:800;color:#126b3a;text-transform:uppercase">Shiv</div>
           <div style="font-size:2rem;font-weight:850;letter-spacing:-.04em">Private research terminal</div>
-          <div style="color:#66756d;margin-top:.35rem">Experimental NIFTY decision system. Read-only market data and paper research only.</div>
+          <div style="color:#66756d;margin-top:.35rem">Advanced V2 NIFTY decision research. Read-only market data and paper simulation only.</div>
         </div>
         """,
         unsafe_allow_html=True,

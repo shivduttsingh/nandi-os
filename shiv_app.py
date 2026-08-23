@@ -11,6 +11,7 @@ from nandi_oi.auth import CredentialConfigurationError, LoginLockout
 from nandi_oi.configuration import is_configured_value
 from nandi_oi.market_schedule import MarketSchedule
 from shiv_v1.after_hours import render_after_hours
+from shiv_v1.ui import PRIMARY_TIMEFRAMES
 from shiv_v2.live import render_shiv_terminal
 
 
@@ -85,6 +86,23 @@ def login_page() -> None:
             st.warning(auth_error)
 
 
+def render_research_timeframe_control(session) -> None:
+    """Keep the primary timeframe visible even when the live V2 screen is not rendered."""
+    if session.is_open:
+        return
+    st.sidebar.markdown("### Strategy timeframe")
+    st.sidebar.selectbox(
+        "Primary strategy timeframe",
+        PRIMARY_TIMEFRAMES,
+        index=PRIMARY_TIMEFRAMES.index(5),
+        format_func=lambda value: f"{value}m" if value < 60 else "1h",
+        key="shiv_v2_primary_timeframe",
+    )
+    st.sidebar.caption(
+        "This selection is retained for the next live session. 1m/3m/5m/15m NIFTY context remains the background confirmation set."
+    )
+
+
 def render_refresh_controls(session, now: datetime) -> None:
     """Always-visible market-data controls for live and research modes."""
     st.sidebar.markdown("### Data controls")
@@ -121,6 +139,7 @@ if not access_token:
 
 now = datetime.now(IST)
 session = MarketSchedule().status(now)
+render_research_timeframe_control(session)
 render_refresh_controls(session, now)
 
 if session.is_open:

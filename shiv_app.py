@@ -85,6 +85,28 @@ def login_page() -> None:
             st.warning(auth_error)
 
 
+def render_refresh_controls(session, now: datetime) -> None:
+    """Always-visible market-data controls for live and research modes."""
+    st.sidebar.markdown("### Data controls")
+    if session.is_open:
+        st.sidebar.success("AUTO-REFRESH ON · every 30 seconds")
+        st.sidebar.caption("Live NIFTY, options and Shiv decisions recalculate automatically during the NSE session.")
+    else:
+        st.sidebar.info("RESEARCH MODE · live decisions paused")
+        st.sidebar.caption("Refresh still reloads the latest available/stale market snapshot and charts.")
+
+    if st.sidebar.button("Refresh Shiv now", use_container_width=True, type="primary"):
+        st.cache_data.clear()
+        st.session_state.shiv_manual_refresh_at = datetime.now(IST)
+        st.rerun()
+
+    refreshed_at = st.session_state.get("shiv_manual_refresh_at")
+    if isinstance(refreshed_at, datetime):
+        st.sidebar.caption(f"Last manual refresh: {refreshed_at.astimezone(IST).strftime('%H:%M:%S')} IST")
+    else:
+        st.sidebar.caption(f"Page checked: {now.strftime('%H:%M:%S')} IST")
+
+
 if "shiv_logged_in" not in st.session_state:
     st.session_state.shiv_logged_in = False
 
@@ -97,7 +119,10 @@ if not access_token:
     st.error("Shiv needs the [upstox] access_token in this app's Streamlit Secrets to load read-only market data.")
     st.stop()
 
-session = MarketSchedule().status(datetime.now(IST))
+now = datetime.now(IST)
+session = MarketSchedule().status(now)
+render_refresh_controls(session, now)
+
 if session.is_open:
     render_shiv_terminal(access_token)
 else:

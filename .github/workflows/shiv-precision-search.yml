@@ -7,6 +7,7 @@ on:
       - 'scripts/search_shiv_precision_v1.py'
       - 'scripts/search_shiv_precision_v1_fast.py'
       - 'scripts/search_shiv_precision_ml.py'
+      - 'scripts/search_shiv_precision_scalp.py'
       - '.github/workflows/shiv-precision-search.yml'
       - 'shiv_precision/**'
       - 'shiv_app.py'
@@ -62,4 +63,52 @@ jobs:
         with:
           name: shiv-precision-classifier
           path: shiv_precision_ml.json
+          if-no-files-found: error
+
+  precision-scalp-5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Validate +5/-5 precision scalp
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_shiv_precision_scalp.py --target 5 --output shiv_precision_scalp5.json
+      - name: Upload +5/-5 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-precision-scalp5
+          path: shiv_precision_scalp5.json
+          if-no-files-found: error
+
+  precision-scalp-7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Validate +7/-5 precision scalp
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_shiv_precision_scalp.py --target 7 --output shiv_precision_scalp7.json
+      - name: Upload +7/-5 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-precision-scalp7
+          path: shiv_precision_scalp7.json
           if-no-files-found: error

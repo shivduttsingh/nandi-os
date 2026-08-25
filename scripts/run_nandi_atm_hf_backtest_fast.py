@@ -19,6 +19,8 @@ from scripts.run_nandi_atm_hf_backtest import (
 )
 from scripts.run_shiv_aplus_hf_backtest import load_hf_frames
 
+MAX_DTE = 7
+
 
 def _completed(series, now: datetime):
     return tuple(c for c in series if c.timestamp + timedelta(minutes=PRIMARY_INTERVAL) <= now)
@@ -27,6 +29,7 @@ def _completed(series, now: datetime):
 def run(start: date, end: date, cache: Path):
     spot_df, opt_df, loaded = load_hf_frames(start, end, cache)
     report = Report(start, end)
+    skipped_far_expiry: list[str] = []
     days = sorted(day for day in set(spot_df["day"]) if start <= day <= end)
 
     for day in days:
@@ -35,6 +38,9 @@ def run(start: date, end: date, cache: Path):
         if not future_expiries:
             continue
         expiry = future_expiries[0]
+        if (expiry - day).days > MAX_DTE:
+            skipped_far_expiry.append(day.isoformat())
+            continue
         day_opt = opt_df[(opt_df["day"] == day) & (opt_df["expiry"] == expiry)]
         if day_spot_df.empty or day_opt.empty:
             continue
@@ -139,7 +145,7 @@ def run(start: date, end: date, cache: Path):
                 window_tracker.active_side = ""
 
             now += timedelta(minutes=5)
-    return report, loaded
+    return report, loaded, skipped_far_expiry
 
 
 def main() -> int:
@@ -149,8 +155,10 @@ def main() -> int:
     parser.add_argument("--output", default="nandi_atm_hf_two_month_results.json")
     parser.add_argument("--cache", default=".cache/hf-india-options")
     args = parser.parse_args()
-    report, loaded = run(args.start, args.end, Path(args.cache))
+    report, loaded, skipped = run(args.start, args.end, Path(args.cache))
     payload = report.payload(loaded)
+    payload["near_expiry_rule"] = f"Only sessions with the nearest available expiry <= {MAX_DTE} calendar days away are included."
+    payload["skipped_days_without_near_expiry"] = skipped
     payload["runner_note"] = "Fast runner pre-aggregates historical candles only; it calls the same current Nandi strategy functions and thresholds."
     Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))

@@ -5,6 +5,7 @@ on:
     branches: [shiv]
     paths:
       - 'scripts/run_shiv_aplus_public_backtest.py'
+      - 'scripts/run_shiv_aplus_hf_backtest.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -15,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  public-backtest:
+  bhav-backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -28,13 +29,37 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install 'openpyxl>=3.1'
-      - name: Run June 2026 SHIV and A++++ replay
+      - name: Run June 2026 Bhav SHIV and A++++ replay
         env:
           PYTHONPATH: .
         run: python scripts/run_shiv_aplus_public_backtest.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_public_backtest_results.json
-      - name: Upload evidence artifact
+      - name: Upload Bhav evidence artifact
         uses: actions/upload-artifact@v4
         with:
           name: shiv-aplus-public-backtest-results
           path: shiv_aplus_public_backtest_results.json
+          if-no-files-found: error
+
+  hf-full-chain-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run June 2026 fuller-chain SHIV and A++++ replay
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_shiv_aplus_hf_backtest.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_hf_backtest_results.json
+      - name: Upload fuller-chain evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-aplus-hf-backtest-results
+          path: shiv_aplus_hf_backtest_results.json
           if-no-files-found: error

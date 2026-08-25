@@ -6,6 +6,7 @@ on:
     paths:
       - 'scripts/run_shiv_aplus_public_backtest.py'
       - 'scripts/run_shiv_aplus_hf_backtest.py'
+      - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -56,7 +57,7 @@ jobs:
       - name: Run June 2026 fuller-chain SHIV and A++++ replay
         env:
           PYTHONPATH: .
-        run: python scripts/run_shiv_aplus_hf_backtest.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_hf_backtest_results.json
+        run: python scripts/run_shiv_aplus_hf_backtest_fast.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_hf_backtest_results.json
       - name: Upload fuller-chain evidence artifact
         uses: actions/upload-artifact@v4
         with:

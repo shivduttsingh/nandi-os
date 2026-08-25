@@ -1,0 +1,39 @@
+name: Nandi high precision research
+
+on:
+  pull_request:
+    branches: [shiv]
+    paths:
+      - 'scripts/search_nandi_high_precision_hf.py'
+      - 'scripts/search_nandi_high_precision_ultrafast.py'
+      - '.github/workflows/nandi-high-precision-ultrafast.yml'
+      - 'nandi_v2/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run focused research and locked May-June test
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_nandi_high_precision_ultrafast.py --output nandi_high_precision_ultrafast.json
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-high-precision-ultrafast
+          path: nandi_high_precision_ultrafast.json
+          if-no-files-found: error

@@ -41,7 +41,7 @@ jobs:
           path: shiv_aplus_public_backtest_results.json
           if-no-files-found: error
 
-  hf-full-chain-backtest:
+  hf-two-month-backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -54,13 +54,13 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install 'pyarrow>=15'
-      - name: Run June 2026 fuller-chain SHIV and A++++ replay
+      - name: Run May-June 2026 fuller-chain SHIV and A++++ replay
         env:
           PYTHONPATH: .
-        run: python scripts/run_shiv_aplus_hf_backtest_fast.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_hf_backtest_results.json
+        run: python scripts/run_shiv_aplus_hf_backtest_fast.py --start 2026-05-01 --end 2026-06-30 --output shiv_aplus_hf_two_month_results.json
       - name: Upload fuller-chain evidence artifact
         uses: actions/upload-artifact@v4
         with:
-          name: shiv-aplus-hf-backtest-results
-          path: shiv_aplus_hf_backtest_results.json
+          name: shiv-aplus-hf-two-month-results
+          path: shiv_aplus_hf_two_month_results.json
           if-no-files-found: error

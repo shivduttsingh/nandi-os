@@ -8,6 +8,7 @@ on:
       - 'scripts/run_shiv_aplus_hf_backtest.py'
       - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
       - 'scripts/run_nandi_atm_hf_backtest.py'
+      - 'scripts/run_nandi_atm_hf_backtest_fast.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -34,7 +35,7 @@ jobs:
       - name: Run May-June 2026 Nandi ATM and ATM +/-2 replay
         env:
           PYTHONPATH: .
-        run: python scripts/run_nandi_atm_hf_backtest.py --start 2026-05-01 --end 2026-06-30 --output nandi_atm_hf_two_month_results.json
+        run: python scripts/run_nandi_atm_hf_backtest_fast.py --start 2026-05-01 --end 2026-06-30 --output nandi_atm_hf_two_month_results.json
       - name: Upload Nandi evidence artifact
         uses: actions/upload-artifact@v4
         with:

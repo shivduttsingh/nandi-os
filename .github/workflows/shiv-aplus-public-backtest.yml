@@ -9,6 +9,7 @@ on:
       - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
       - 'scripts/run_nandi_atm_hf_backtest.py'
       - 'scripts/run_nandi_atm_hf_backtest_fast.py'
+      - 'scripts/run_nandi_single_tf_matrix_hf.py'
       - 'scripts/run_nandi_test2_locked_hf.py'
       - 'scripts/search_nandi_high_precision_hf.py'
       - 'scripts/search_nandi_high_precision_fast.py'
@@ -22,6 +23,30 @@ permissions:
   contents: read
 
 jobs:
+  nandi-single-tf-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run Nandi 1m 3m 5m 15m matrix
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_single_tf_matrix_hf.py --start 2026-05-01 --end 2026-06-30 --output nandi_single_tf_matrix.json
+      - name: Upload single-timeframe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-single-tf-matrix
+          path: nandi_single_tf_matrix.json
+          if-no-files-found: error
+
   nandi-high-precision-search:
     runs-on: ubuntu-latest
     timeout-minutes: 30

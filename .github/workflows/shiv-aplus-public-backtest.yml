@@ -1,0 +1,192 @@
+name: SHIV, A++++ and Nandi public backtests
+
+on:
+  pull_request:
+    branches: [shiv]
+    paths:
+      - 'scripts/run_shiv_aplus_public_backtest.py'
+      - 'scripts/run_shiv_aplus_hf_backtest.py'
+      - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
+      - 'scripts/run_nandi_atm_hf_backtest.py'
+      - 'scripts/run_nandi_atm_hf_backtest_fast.py'
+      - 'scripts/run_nandi_single_tf_matrix_hf.py'
+      - 'scripts/run_nandi_test2_locked_hf.py'
+      - 'scripts/search_nandi_high_precision_hf.py'
+      - 'scripts/search_nandi_high_precision_fast.py'
+      - '.github/workflows/shiv-aplus-public-backtest.yml'
+      - 'shiv_v1/**'
+      - 'shiv_v2/**'
+      - 'nandi_v2/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nandi-single-tf-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run Nandi 1m 3m 5m 15m matrix
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_single_tf_matrix_hf.py --start 2026-05-01 --end 2026-06-30 --output nandi_single_tf_matrix.json
+      - name: Upload single-timeframe evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-single-tf-matrix
+          path: nandi_single_tf_matrix.json
+          if-no-files-found: error
+
+  nandi-high-precision-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Search March-April and lock final May-June test
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_nandi_high_precision_fast.py --output nandi_high_precision_search.json
+      - name: Upload high-precision search evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-high-precision-search
+          path: nandi_high_precision_search.json
+          if-no-files-found: error
+
+  nandi-test2-mar-apr-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run locked Nandi Test 2 on March-April 2026 unseen block
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_test2_locked_hf.py --start 2026-03-01 --end 2026-04-30 --output nandi_test2_locked_mar_apr_oos.json
+      - name: Upload locked Test 2 March-April evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-test2-locked-mar-apr-oos
+          path: nandi_test2_locked_mar_apr_oos.json
+          if-no-files-found: error
+
+  nandi-test2-july-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run locked Nandi Test 2 on July 2026 holdout
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_test2_locked_hf.py --start 2026-07-01 --end 2026-07-31 --output nandi_test2_locked_july_oos.json
+      - name: Upload locked Test 2 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-test2-locked-july-oos
+          path: nandi_test2_locked_july_oos.json
+          if-no-files-found: error
+
+  nandi-atm-two-month-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run May-June 2026 Nandi ATM and ATM +/-2 replay
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_atm_hf_backtest_fast.py --start 2026-05-01 --end 2026-06-30 --output nandi_atm_hf_two_month_results.json
+      - name: Upload Nandi evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-atm-hf-two-month-results
+          path: nandi_atm_hf_two_month_results.json
+          if-no-files-found: error
+
+  bhav-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'openpyxl>=3.1'
+      - name: Run June 2026 Bhav SHIV and A++++ replay
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_shiv_aplus_public_backtest.py --start 2026-06-01 --end 2026-06-30 --output shiv_aplus_public_backtest_results.json
+      - name: Upload Bhav evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-aplus-public-backtest-results
+          path: shiv_aplus_public_backtest_results.json
+          if-no-files-found: error
+
+  hf-two-month-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run May-June 2026 fuller-chain SHIV and A++++ replay
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_shiv_aplus_hf_backtest_fast.py --start 2026-05-01 --end 2026-06-30 --output shiv_aplus_hf_two_month_results.json
+      - name: Upload fuller-chain evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-aplus-hf-two-month-results
+          path: shiv_aplus_hf_two_month_results.json
+          if-no-files-found: error

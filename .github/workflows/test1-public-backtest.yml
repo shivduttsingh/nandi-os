@@ -1,0 +1,41 @@
+name: TEST 1 public backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'test1/**'
+      - 'pages/7_TEST_1.py'
+      - 'scripts/run_test1_public_backtest.py'
+      - 'requirements.txt'
+      - '.github/workflows/test1-public-backtest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  public-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run June 2026 public TEST 1 backtest
+        run: python scripts/run_test1_public_backtest.py --start 2026-06-01 --end 2026-06-30 --output test1_public_backtest_results.json
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test1-public-backtest-results
+          path: test1_public_backtest_results.json
+          if-no-files-found: error

@@ -9,16 +9,16 @@ def focused_candidate_rules(rows):
     dev = rows[rows.month.isin([1, 2])]
     val = rows[rows.month.isin([3, 4])]
     candidates = []
-    # Focused, pre-specified family: 4,608 combinations max. May-Jun remains untouched.
-    for side, gate, impulse_min, eff_min, atm_min, dom_min, struct3, pos_req, oi_req, time_mode in product(
+    # Precision family: both 15m and 3m structure must align and the completed
+    # 5m signal candle must close in the directional acceptance zone. This
+    # leaves 576 pre-specified combinations; May-Jun remains untouched.
+    for side, gate, impulse_min, eff_min, atm_min, dom_min, oi_req, time_mode in product(
         ("CE", "PE", "BOTH"),
         ("breakout", "pullback_reclaim"),
         (4.0, 8.0),
         (0.35, 0.55),
         (0.5, 1.0),
         (65.0, 75.0),
-        (False, True),
-        (False, True),
         (False, True),
         ("ALL", "MORNING", "AFTERNOON"),
     ):
@@ -31,8 +31,8 @@ def focused_candidate_rules(rows):
             "atm_edge_min": 1.0,
             "dominance_min": dom_min,
             "structure15": True,
-            "structure3": struct3,
-            "position_required": pos_req,
+            "structure3": True,
+            "position_required": True,
             "oi_required": oi_req,
             "volume_ratio_min": 1.0,
             "time_mode": time_mode,

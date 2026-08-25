@@ -1,4 +1,4 @@
-name: SHIV and A++++ public backtest
+name: SHIV, A++++ and Nandi public backtests
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
       - 'scripts/run_shiv_aplus_public_backtest.py'
       - 'scripts/run_shiv_aplus_hf_backtest.py'
       - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
+      - 'scripts/run_nandi_atm_hf_backtest.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -17,6 +18,30 @@ permissions:
   contents: read
 
 jobs:
+  nandi-atm-two-month-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run May-June 2026 Nandi ATM and ATM +/-2 replay
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_atm_hf_backtest.py --start 2026-05-01 --end 2026-06-30 --output nandi_atm_hf_two_month_results.json
+      - name: Upload Nandi evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-atm-hf-two-month-results
+          path: nandi_atm_hf_two_month_results.json
+          if-no-files-found: error
+
   bhav-backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 20

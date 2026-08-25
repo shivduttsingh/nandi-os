@@ -11,6 +11,7 @@ on:
       - 'scripts/run_nandi_atm_hf_backtest_fast.py'
       - 'scripts/run_nandi_test2_locked_hf.py'
       - 'scripts/search_nandi_high_precision_hf.py'
+      - 'scripts/search_nandi_high_precision_fast.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -37,7 +38,7 @@ jobs:
       - name: Search March-April and lock final May-June test
         env:
           PYTHONPATH: .
-        run: python scripts/search_nandi_high_precision_hf.py --output nandi_high_precision_search.json
+        run: python scripts/search_nandi_high_precision_fast.py --output nandi_high_precision_search.json
       - name: Upload high-precision search evidence
         uses: actions/upload-artifact@v4
         with:

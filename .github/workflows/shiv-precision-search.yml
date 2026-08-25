@@ -6,6 +6,7 @@ on:
     paths:
       - 'scripts/search_shiv_precision_v1.py'
       - 'scripts/search_shiv_precision_v1_fast.py'
+      - 'scripts/search_shiv_precision_ml.py'
       - '.github/workflows/shiv-precision-search.yml'
       - 'shiv_precision/**'
       - 'shiv_app.py'
@@ -37,4 +38,28 @@ jobs:
         with:
           name: shiv-precision-search
           path: shiv_precision_search.json
+          if-no-files-found: error
+
+  precision-classifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15' 'scikit-learn>=1.5'
+      - name: Run high-precision classifier validation
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_shiv_precision_ml.py --output shiv_precision_ml.json
+      - name: Upload classifier evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-precision-classifier
+          path: shiv_precision_ml.json
           if-no-files-found: error

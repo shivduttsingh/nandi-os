@@ -9,6 +9,7 @@ on:
       - 'scripts/run_shiv_aplus_hf_backtest_fast.py'
       - 'scripts/run_nandi_atm_hf_backtest.py'
       - 'scripts/run_nandi_atm_hf_backtest_fast.py'
+      - 'scripts/run_nandi_test2_locked_hf.py'
       - '.github/workflows/shiv-aplus-public-backtest.yml'
       - 'shiv_v1/**'
       - 'shiv_v2/**'
@@ -19,6 +20,30 @@ permissions:
   contents: read
 
 jobs:
+  nandi-test2-july-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run locked Nandi Test 2 on July 2026 holdout
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_test2_locked_hf.py --start 2026-07-01 --end 2026-07-31 --output nandi_test2_locked_july_oos.json
+      - name: Upload locked Test 2 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-test2-locked-july-oos
+          path: nandi_test2_locked_july_oos.json
+          if-no-files-found: error
+
   nandi-atm-two-month-backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 25

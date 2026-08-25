@@ -20,6 +20,30 @@ permissions:
   contents: read
 
 jobs:
+  nandi-test2-mar-apr-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run locked Nandi Test 2 on March-April 2026 unseen block
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_nandi_test2_locked_hf.py --start 2026-03-01 --end 2026-04-30 --output nandi_test2_locked_mar_apr_oos.json
+      - name: Upload locked Test 2 March-April evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: nandi-test2-locked-mar-apr-oos
+          path: nandi_test2_locked_mar_apr_oos.json
+          if-no-files-found: error
+
   nandi-test2-july-holdout:
     runs-on: ubuntu-latest
     timeout-minutes: 25

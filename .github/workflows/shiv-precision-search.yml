@@ -1,0 +1,40 @@
+name: SHIV precision rebuild research
+
+on:
+  pull_request:
+    branches: [shiv]
+    paths:
+      - 'scripts/search_shiv_precision_v1.py'
+      - 'scripts/search_shiv_precision_v1_fast.py'
+      - '.github/workflows/shiv-precision-search.yml'
+      - 'shiv_precision/**'
+      - 'shiv_app.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  precision-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run locked walk-forward precision search
+        env:
+          PYTHONPATH: .
+        run: python scripts/search_shiv_precision_v1_fast.py --start 2026-01-01 --end 2026-06-30 --output shiv_precision_search.json
+      - name: Upload precision evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-precision-search
+          path: shiv_precision_search.json
+          if-no-files-found: error

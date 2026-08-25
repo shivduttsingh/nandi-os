@@ -14,6 +14,23 @@ PRIMARY_INTERVAL = 5
 MAX_DTE = 7
 COMBOS = tuple(combo for size in (2, 3, 4) for combo in combinations(TIMEFRAMES, size))
 
+# Backtest-only performance cache. This does not alter any market rule; it only
+# avoids repeatedly scanning the full option table for the same prior reference.
+_original_previous_contract_reference = base.previous_contract_reference
+_reference_cache: dict[tuple[object, object, int, str], tuple[float, float] | None] = {}
+
+
+def _cached_previous_contract_reference(all_opt, day, expiry, strike, side):
+    key = (day, expiry, int(strike), str(side))
+    if key not in _reference_cache:
+        _reference_cache[key] = _original_previous_contract_reference(
+            all_opt, day, expiry, int(strike), str(side)
+        )
+    return _reference_cache[key]
+
+
+base.previous_contract_reference = _cached_previous_contract_reference
+
 
 def _name(combo: tuple[int, ...]) -> str:
     return "SHIV_MTF_" + "_".join(str(x) for x in combo)

@@ -1,0 +1,40 @@
+name: SHIV multi-timeframe matrix
+
+on:
+  pull_request:
+    branches: [shiv]
+    paths:
+      - 'scripts/run_shiv_mtf_matrix_hf.py'
+      - '.github/workflows/shiv-mtf-matrix.yml'
+      - 'shiv_v1/**'
+      - 'shiv_v2/**'
+      - 'nandi_v2/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shiv-mtf-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install 'pyarrow>=15'
+      - name: Run SHIV MTF combination matrix
+        env:
+          PYTHONPATH: .
+        run: python scripts/run_shiv_mtf_matrix_hf.py --start 2026-05-01 --end 2026-06-30 --output shiv_mtf_matrix.json
+      - name: Upload SHIV MTF evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiv-mtf-matrix
+          path: shiv_mtf_matrix.json
+          if-no-files-found: error

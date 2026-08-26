@@ -56,7 +56,7 @@ def test_strategy_b_can_confirm_clean_ce_alignment():
 def test_option_backtest_enters_at_open_and_counts_ambiguous_bar_as_loss():
     base = datetime(2026, 6, 10, 10, 0)
     series = (
-        candle(base, 100, 106, 98, 104),
+        candle(base, 100, 112, 94, 104),
         candle(base + timedelta(minutes=1), 104, 116, 97, 110),
     )
     outcome, entry, exit_price, net, held = _trade_outcome(

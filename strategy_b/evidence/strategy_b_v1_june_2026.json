@@ -1,0 +1,49 @@
+{
+  "strategy": "Strategy B v1",
+  "status": "REJECTED",
+  "reason": "Failed frozen out-of-sample validation; do not use as a live trading strategy.",
+  "methodology": {
+    "development_window": "2026-06-01 to 2026-06-15",
+    "validation_window": "2026-06-16 to 2026-06-30",
+    "selected_profile": "BALANCED",
+    "selection_used_validation_data": false,
+    "execution": "Signal on completed 1m candle; buy ATM CE/PE on next 1m open; +10/-5 premium points; 0.25 entry slippage + 0.50 additional friction; 15m max hold; same-candle target/stop counted as stop."
+  },
+  "development": {
+    "tested_days": 11,
+    "trades": 157,
+    "target_win_rate_pct": 35.67,
+    "net_points_after_friction": 6.5,
+    "expectancy_points_per_trade": 0.04,
+    "profit_factor": 1.01,
+    "max_drawdown_points": 65.3
+  },
+  "validation": {
+    "tested_days": 10,
+    "trades": 153,
+    "target_wins": 31,
+    "stop_losses": 106,
+    "timeouts": 16,
+    "target_win_rate_pct": 20.26,
+    "profitable_trade_rate_pct": 27.45,
+    "net_points_after_friction": -270.75,
+    "expectancy_points_per_trade": -1.77,
+    "profit_factor": 0.54,
+    "max_drawdown_points": 274.75
+  },
+  "full_month": {
+    "tested_days": 21,
+    "trades": 310,
+    "target_win_rate_pct": 28.06,
+    "net_points_after_friction": -264.25,
+    "expectancy_points_per_trade": -0.85,
+    "profit_factor": 0.77,
+    "max_drawdown_points": 314.8
+  },
+  "ci": {
+    "workflow_run": 33011852967,
+    "unit_tests": "4 passed",
+    "backtest_step": "passed",
+    "evidence_artifact_id": 9622949226
+  }
+}

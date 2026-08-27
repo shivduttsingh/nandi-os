@@ -1,0 +1,36 @@
+name: Strategy 70 trend search
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_trend.py'
+      - '.github/workflows/strategy-70-trend.yml'
+      - 'test1/public_backtest.py'
+      - 'nandi_oi/**'
+
+permissions:
+  contents: read
+
+jobs:
+  search-trend-70:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run independent trend-pullback search
+        run: python scripts/search_strategy_70_trend.py
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-trend
+          path: strategy_70_trend.json
+          if-no-files-found: error

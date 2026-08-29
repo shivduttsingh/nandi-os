@@ -115,10 +115,25 @@ def main():
             c=Config(period,lo_r,hi_r,outp,vol,minp,pair[0],pair[1],cd);st,ds,_=evaluate(ev,c,sm,tm,days,*train);count+=1;raw=st['win_rate']+st['profit_factor']*3+st['expectancy']*2+ds['avg_trades_per_day']*5+ds['avg_net_points_per_day'];near.append((raw,c,st,ds))
             if ds['avg_trades_per_day']>=1.5 and st['expectancy']>0 and st['profit_factor']>1:ranked.append((raw,c,st,ds))
     near.sort(key=lambda x:x[0],reverse=True);ranked.sort(key=lambda x:x[0],reverse=True);best={'config':asdict(near[0][1]),'stats':near[0][2],'daily':near[0][3]} if near else None
-    if not ranked:out={'search_name':'Shiv RSI Rejection + Option Confirmation Proof','status':'NO_TRAINING_CANDIDATE','config_count':count,'best_available_training':best}
+    if not ranked:
+        out={'search_name':'Shiv RSI Rejection + Option Confirmation Proof','status':'NO_TRAINING_CANDIDATE','config_count':count,'best_available_training':best}
     else:
-        _,c,trst,trds=ranked[0];ev,sm,tm=cache[(c.period,c.lower,c.upper)];def pp(a,b):
-            st,ds,tr=evaluate(ev,c,sm,tm,days,a,b);return {'stats':st,'daily':ds,'trades':[{**asdict(x),'day':x.day.isoformat(),'signal_time':x.signal_time.isoformat(),'entry_time':x.entry_time.isoformat()} for x in tr]}
-        val=pp(*valw);stress=pp(*stressw);comb=pp(valw[0],stressw[1]);proven=exact(val) and exact(stress) and comb['stats']['win_rate']>=70 and comb['daily']['avg_net_points_per_day']>=15;out={'search_name':'Shiv RSI Rejection + Option Confirmation Proof','status':'PROVEN_EXACT_TARGET' if proven else 'NO_EXACT_TARGET_PROVEN','config_count':count,'chosen_config':asdict(c),'training':{'stats':trst,'daily':trds},'validation':val,'stress':stress,'combined_oos':comb,'best_available_training':best}
+        _,c,trst,trds=ranked[0]
+        ev,sm,tm=cache[(c.period,c.lower,c.upper)]
+        def pp(a,b):
+            st,ds,tr=evaluate(ev,c,sm,tm,days,a,b)
+            return {
+                'stats':st,
+                'daily':ds,
+                'trades':[
+                    {**asdict(x),'day':x.day.isoformat(),'signal_time':x.signal_time.isoformat(),'entry_time':x.entry_time.isoformat()}
+                    for x in tr
+                ],
+            }
+        val=pp(*valw)
+        stress=pp(*stressw)
+        comb=pp(valw[0],stressw[1])
+        proven=exact(val) and exact(stress) and comb['stats']['win_rate']>=70 and comb['daily']['avg_net_points_per_day']>=15
+        out={'search_name':'Shiv RSI Rejection + Option Confirmation Proof','status':'PROVEN_EXACT_TARGET' if proven else 'NO_EXACT_TARGET_PROVEN','config_count':count,'chosen_config':asdict(c),'training':{'stats':trst,'daily':trds},'validation':val,'stress':stress,'combined_oos':comb,'best_available_training':best}
     Path('strategy_70_rsi_rejection.json').write_text(json.dumps(out,indent=2),encoding='utf-8');print(json.dumps(out,indent=2))
 if __name__=='__main__':main()

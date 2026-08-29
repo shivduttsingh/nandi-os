@@ -1,0 +1,32 @@
+name: Strategy 70 daily density fast proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_option_impulse.py'
+      - 'scripts/search_strategy_70_daily_density.py'
+      - 'scripts/search_strategy_70_daily_density_fast.py'
+      - '.github/workflows/strategy-70-daily-density-fast.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  daily-density-fast-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run frozen 3+3 month proof
+        run: python scripts/search_strategy_70_daily_density_fast.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-daily-density-fast
+          path: strategy_70_daily_density_fast.json
+          if-no-files-found: error

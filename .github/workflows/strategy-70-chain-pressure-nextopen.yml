@@ -1,0 +1,28 @@
+name: Strategy 70 chain pressure next-open proof
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_chain_pressure.py'
+      - 'scripts/search_strategy_70_chain_pressure_nextopen.py'
+      - '.github/workflows/strategy-70-chain-pressure-nextopen.yml'
+permissions:
+  contents: read
+jobs:
+  chain-pressure-nextopen-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run chain pressure with next-open execution
+        run: python scripts/search_strategy_70_chain_pressure_nextopen.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-chain-pressure-nextopen
+          path: strategy_70_chain_pressure.json
+          if-no-files-found: error

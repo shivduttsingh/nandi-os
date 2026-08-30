@@ -1,4 +1,4 @@
-name: Profit-first previous-week data check
+name: Profit-first previous-week exact replay
 
 on:
   pull_request:
@@ -6,40 +6,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  inspect-public-data:
+  replay:
     runs-on: ubuntu-24.04
+    env:
+      UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Download public NIFTY data folder page
-        run: |
-          curl -L --fail --retry 3 'https://www.dropbox.com/scl/fo/e4l104dzo5sj78q8rryx7/ADiPpZwjRYVyraNu0VV6Wo4?dl=0&rlkey=q2kr2mova9ij5qycsiy1mutcz&st=td40dkea' -o dropbox_page.html
-          file dropbox_page.html
-          ls -lh dropbox_page.html
-      - name: Extract embedded filenames and download links
-        run: |
-          python - <<'PY'
-          import html, re
-          from pathlib import Path
-          text = html.unescape(Path('dropbox_page.html').read_text(encoding='utf-8', errors='ignore'))
-          # Decode common JSON/JS escapes enough to expose embedded file metadata.
-          text = text.replace('\\u002F','/').replace('\\u003A',':').replace('\\u0026','&').replace('\\u003D','=').replace('\\/','/')
-          out=[]
-          for pat in [
-              r'[^"<>]{0,120}(?:2026[-_/ ]?08|Aug(?:ust)?)[^"<>]{0,240}',
-              r'[^"<>]{0,120}(?:NIFTY|nifty)[^"<>]{0,240}\.(?:csv|zip|txt|parquet)',
-              r'https://[^"\'<> ]+',
-          ]:
-              for m in re.finditer(pat, text, re.I):
-                  s=m.group(0).strip()
-                  if s not in out:
-                      out.append(s)
-          Path('dropbox_embedded_matches.txt').write_text('\n'.join(out[:3000]), encoding='utf-8')
-          print('\n'.join(out[:500]))
-          PY
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Replay unchanged +943 strategy on Aug 24-28
+        run: python scripts/research_profit_first_aug24_28_upstox.py
       - uses: actions/upload-artifact@v4
         with:
-          name: profit-first-last-week-data-inspection
-          path: dropbox_embedded_matches.txt
+          name: profit-first-aug24-28-exact-replay
+          path: |
+            profit_first_aug24_28_2026.json
+            profit_first_aug24_28_2026_trades.csv

@@ -10,16 +10,36 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Download free NIFTY expired-options dataset
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download public NIFTY data folder page
         run: |
-          curl -L --fail --retry 3 'https://www.dropbox.com/scl/fo/e4l104dzo5sj78q8rryx7/ADiPpZwjRYVyraNu0VV6Wo4?rlkey=q2kr2mova9ij5qycsiy1mutcz&st=td40dkea&dl=1' -o nifty_options.zip
-          file nifty_options.zip
-          ls -lh nifty_options.zip
-      - name: Inspect archive for August 2026 files
+          curl -L --fail --retry 3 'https://www.dropbox.com/scl/fo/e4l104dzo5sj78q8rryx7/ADiPpZwjRYVyraNu0VV6Wo4?dl=0&rlkey=q2kr2mova9ij5qycsiy1mutcz&st=td40dkea' -o dropbox_page.html
+          file dropbox_page.html
+          ls -lh dropbox_page.html
+      - name: Extract embedded filenames and download links
         run: |
-          unzip -l nifty_options.zip | tee archive_listing.txt
-          grep -Ei '2026|aug|08|nifty' archive_listing.txt | tail -n 250 || true
+          python - <<'PY'
+          import html, re
+          from pathlib import Path
+          text = html.unescape(Path('dropbox_page.html').read_text(encoding='utf-8', errors='ignore'))
+          # Decode common JSON/JS escapes enough to expose embedded file metadata.
+          text = text.replace('\\u002F','/').replace('\\u003A',':').replace('\\u0026','&').replace('\\u003D','=').replace('\\/','/')
+          out=[]
+          for pat in [
+              r'[^"<>]{0,120}(?:2026[-_/ ]?08|Aug(?:ust)?)[^"<>]{0,240}',
+              r'[^"<>]{0,120}(?:NIFTY|nifty)[^"<>]{0,240}\.(?:csv|zip|txt|parquet)',
+              r'https://[^"\'<> ]+',
+          ]:
+              for m in re.finditer(pat, text, re.I):
+                  s=m.group(0).strip()
+                  if s not in out:
+                      out.append(s)
+          Path('dropbox_embedded_matches.txt').write_text('\n'.join(out[:3000]), encoding='utf-8')
+          print('\n'.join(out[:500]))
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: profit-first-last-week-data-inspection
-          path: archive_listing.txt
+          path: dropbox_embedded_matches.txt

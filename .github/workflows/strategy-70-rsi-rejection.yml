@@ -1,0 +1,27 @@
+name: Strategy 70 RSI rejection proof
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_rsi_rejection.py'
+      - '.github/workflows/strategy-70-rsi-rejection.yml'
+permissions:
+  contents: read
+jobs:
+  rsi-rejection-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run RSI rejection option-confirmation proof
+        run: python scripts/search_strategy_70_rsi_rejection.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-rsi-rejection
+          path: strategy_70_rsi_rejection.json
+          if-no-files-found: error

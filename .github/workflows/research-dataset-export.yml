@@ -1,0 +1,25 @@
+name: Research dataset export
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/research-dataset-export.yml'
+permissions:
+  contents: read
+jobs:
+  export-dataset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Export public sample workbook
+        run: python -c "from pathlib import Path; from test1.public_backtest import _download_public_sample; _download_public_sample(Path('nifty_1y_1min.xlsx'))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nandi-public-research-dataset
+          path: nifty_1y_1min.xlsx
+          if-no-files-found: error

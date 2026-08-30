@@ -1,0 +1,28 @@
+name: Strategy 70 chain pressure wide proof
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_chain_pressure.py'
+      - 'scripts/search_strategy_70_chain_pressure_wide.py'
+      - '.github/workflows/strategy-70-chain-pressure-wide.yml'
+permissions:
+  contents: read
+jobs:
+  chain-pressure-wide-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run wide frozen chain-pressure proof
+        run: python scripts/search_strategy_70_chain_pressure_wide.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-chain-pressure-wide
+          path: strategy_70_chain_pressure.json
+          if-no-files-found: error

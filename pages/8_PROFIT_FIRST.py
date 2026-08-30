@@ -11,13 +11,7 @@ import streamlit.components.v1 as components
 from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_oi.configuration import is_configured_value
 from nandi_v2.charting import candlestick_chart_html, completed_candles
-from nandi_v2.profit_first import (
-    PUBLIC_DATA_URL,
-    RULES,
-    UpstoxProfitFirstHistory,
-    run_public_backtest,
-    signal_side,
-)
+from nandi_v2.profit_first import RULES, UpstoxProfitFirstHistory, signal_side
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -41,11 +35,6 @@ def configured_token() -> str:
 @st.cache_resource
 def market_client(token: str) -> UpstoxOptionChainClient:
     return UpstoxOptionChainClient(access_token=token, timeout_seconds=15)
-
-
-@st.cache_data(show_spinner=False, ttl=86_400)
-def cached_public_backtest(start_iso: str, end_iso: str):
-    return run_public_backtest(date.fromisoformat(start_iso), date.fromisoformat(end_iso))
 
 
 def render_summary(summary: dict) -> None:
@@ -99,7 +88,7 @@ for key, default in {
 
 
 st.title("PROFIT FIRST · Midday Reversal")
-st.caption("Same frozen strategy engine for live paper testing and historical backtesting.")
+st.caption("Same frozen strategy engine for live paper testing and Upstox historical backtesting.")
 
 st.info(
     "12:00–14:00 IST · completed NIFTY 1-minute move ≥ +0.05% → buy ATM PE next minute · "
@@ -107,7 +96,7 @@ st.info(
     "one position at a time · exit after 30 option bars."
 )
 
-live_tab, backtest_tab, proof_tab = st.tabs(["Live paper test", "Backtest lab", "Validated proof"])
+live_tab, backtest_tab, source_tab = st.tabs(["Live paper test", "Backtest lab", "Data source"])
 
 
 with live_tab:
@@ -275,73 +264,44 @@ with live_tab:
 
 
 with backtest_tab:
-    st.subheader("Backtest lab")
-    source = st.radio(
-        "Data source",
-        ["Public 1-minute workbook", "Recent Upstox history"],
-        horizontal=True,
+    st.subheader("Upstox historical backtest")
+    st.success("Data source locked: Upstox only.")
+    st.caption(
+        "Nandi reads historical NIFTY 1-minute candles and nearest-expiry ATM CE/PE option candles from Upstox. "
+        "Expired-option history requires Upstox Plus. Each run is limited to 32 calendar days so one full month can be tested at a time."
     )
-
-    if source == "Public 1-minute workbook":
-        st.caption(
-            "Exact public sample used for the original research. Coverage: 3 Jul 2025–30 Jun 2026. "
-            "No Upstox token is required."
-        )
+    token = configured_token()
+    if not token:
+        st.warning("The read-only Upstox token is not available in this Streamlit session.")
+    else:
+        last_complete_date = datetime.now(IST).date() - timedelta(days=1)
+        minimum = date(2020, 1, 1)
+        default_start = max(minimum, last_complete_date - timedelta(days=7))
         dates = st.columns(2)
         start_date = dates[0].date_input(
             "From",
-            value=date(2026, 1, 1),
-            min_value=date(2025, 7, 3),
-            max_value=date(2026, 6, 30),
-            key="pf_public_from",
+            value=default_start,
+            min_value=minimum,
+            max_value=last_complete_date,
+            key="pf_upstox_from",
         )
         end_date = dates[1].date_input(
             "To",
-            value=date(2026, 6, 30),
-            min_value=date(2025, 7, 3),
-            max_value=date(2026, 6, 30),
-            key="pf_public_to",
+            value=last_complete_date,
+            min_value=minimum,
+            max_value=last_complete_date,
+            key="pf_upstox_to",
         )
-        st.caption(f"Dataset: {PUBLIC_DATA_URL}")
-        if st.button("Run PROFIT FIRST public backtest", type="primary", use_container_width=True):
+        if st.button("Run Upstox backtest", type="primary", use_container_width=True):
             if start_date > end_date:
                 st.error("From date must be on or before To date.")
+            elif (end_date - start_date).days > 31:
+                st.error("Choose a range of 32 calendar days or less. Test longer history month by month.")
+            elif start_date == end_date and start_date.weekday() >= 5:
+                st.warning(
+                    f"{start_date} is a weekend, so NSE has no NIFTY/option candles to backtest."
+                )
             else:
-                try:
-                    with st.spinner("Replaying the frozen rule candle by candle..."):
-                        result = cached_public_backtest(start_date.isoformat(), end_date.isoformat())
-                    render_results(*result)
-                except Exception as exc:
-                    st.error(f"Public backtest failed: {exc}")
-
-    else:
-        st.caption(
-            "Uses Nandi's read-only Upstox historical NIFTY and option candles. "
-            "Expired-option history requires Upstox Plus. One run is limited to 32 calendar days."
-        )
-        token = configured_token()
-        if not token:
-            st.warning("The read-only Upstox token is not available in this Streamlit session.")
-        else:
-            today = datetime.now(IST).date()
-            minimum = today - timedelta(days=180)
-            default_start = max(minimum, today - timedelta(days=7))
-            dates = st.columns(2)
-            start_date = dates[0].date_input(
-                "From",
-                value=default_start,
-                min_value=minimum,
-                max_value=today,
-                key="pf_upstox_from",
-            )
-            end_date = dates[1].date_input(
-                "To",
-                value=today,
-                min_value=minimum,
-                max_value=today,
-                key="pf_upstox_to",
-            )
-            if st.button("Run recent Upstox backtest", type="primary", use_container_width=True):
                 try:
                     with st.spinner("Reading NIFTY + nearest-expiry ATM options from Upstox..."):
                         history = UpstoxProfitFirstHistory(token)
@@ -351,44 +311,17 @@ with backtest_tab:
                     st.error(f"Upstox backtest failed: {exc}")
 
 
-with proof_tab:
-    st.subheader("Corrected six-month proof")
-    st.caption(
-        "The earlier +943.43 research replay used the next-minute NIFTY close to choose ATM. "
-        "That was a look-ahead leak. The corrected causal replay freezes ATM from the signal candle close."
-    )
-    proof = st.columns(6)
-    proof[0].metric("Jan–Jun trades", "305")
-    proof[1].metric("Wins / losses", "158 / 147")
-    proof[2].metric("Win rate", "51.80%")
-    proof[3].metric("Net option points", "+942.63")
-    proof[4].metric("Expectancy", "+3.09 / trade")
-    proof[5].metric("Profit factor", "1.437")
-
-    proof_rows = pd.DataFrame(
-        [
-            ["Jan 2026", 42, 19, 23, 45.24, 250.25],
-            ["Feb 2026", 39, 25, 14, 64.10, 144.80],
-            ["Mar 2026", 69, 26, 43, 37.68, -31.52],
-            ["Apr 2026", 55, 28, 27, 50.91, -48.10],
-            ["May 2026", 52, 31, 21, 59.62, 131.05],
-            ["Jun 2026", 48, 29, 19, 60.42, 496.15],
-        ],
-        columns=["Month", "Trades", "Wins", "Losses", "Win rate %", "Net option points"],
-    )
-    st.dataframe(proof_rows, use_container_width=True, hide_index=True)
-
+with source_tab:
+    st.subheader("Nandi PROFIT FIRST data policy")
     st.markdown(
         """
-**Frozen execution rule**
+- **Live paper test:** Upstox only.
+- **Historical backtest:** Upstox only, including past dates.
+- **Forward paper recorder:** Upstox only.
+- **No public workbook is offered as a Nandi backtest source.**
+- Expired option history depends on the Upstox account/plan and a valid read-only access token.
 
-- Signal only from completed NIFTY 1-minute candles between **12:00 and 14:00 IST**.
-- **+0.05% or more NIFTY impulse → buy ATM PE.**
-- **−0.05% or more NIFTY impulse → buy ATM CE.**
-- ATM strike is selected from the **signal candle close**, so there is no next-minute look-ahead.
-- Entry uses the next-minute option open **+0.20 points slippage**.
-- Only one trade may be open.
-- Exit after **30 option bars**, with another **0.50 points friction** deducted.
+The frozen PROFIT FIRST trading rule is unchanged. Only the data-source policy has changed.
         """
     )
 

@@ -1,0 +1,25 @@
+name: Profit-first previous-week data check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  inspect-public-data:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download free NIFTY expired-options dataset
+        run: |
+          curl -L --fail --retry 3 'https://www.dropbox.com/scl/fo/e4l104dzo5sj78q8rryx7/ADiPpZwjRYVyraNu0VV6Wo4?rlkey=q2kr2mova9ij5qycsiy1mutcz&st=td40dkea&dl=1' -o nifty_options.zip
+          file nifty_options.zip
+          ls -lh nifty_options.zip
+      - name: Inspect archive for August 2026 files
+        run: |
+          unzip -l nifty_options.zip | tee archive_listing.txt
+          grep -Ei '2026|aug|08|nifty' archive_listing.txt | tail -n 250 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profit-first-last-week-data-inspection
+          path: archive_listing.txt

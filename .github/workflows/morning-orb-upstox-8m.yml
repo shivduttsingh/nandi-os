@@ -1,9 +1,9 @@
-name: Morning ORB Upstox 8M proof
+name: Morning ORB Open Data 8M screen
 
 on:
   pull_request:
     paths:
-      - "scripts/search_morning_orb_upstox_8m.py"
+      - "scripts/search_morning_orb_open_8m.py"
       - ".github/workflows/morning-orb-upstox-8m.yml"
   workflow_dispatch:
 
@@ -21,16 +21,14 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run Upstox-only 8-month morning ORB research
-        env:
-          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-        run: python scripts/search_morning_orb_upstox_8m.py
+      - name: Run open-data 8-month morning ORB screen
+        run: python scripts/search_morning_orb_open_8m.py
       - name: Upload research evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: morning-orb-upstox-8m
+          name: morning-orb-open-8m
           path: |
-            morning_orb_upstox_8m.json
-            morning_orb_upstox_8m_trades.csv
+            morning_orb_open_8m.json
+            morning_orb_open_8m_trades.csv
           if-no-files-found: warn

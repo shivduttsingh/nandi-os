@@ -1,0 +1,27 @@
+name: Strategy 70 option lead divergence proof
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_option_lead.py'
+      - '.github/workflows/strategy-70-option-lead.yml'
+permissions:
+  contents: read
+jobs:
+  option-lead-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run option-leads-spot divergence proof
+        run: python scripts/search_strategy_70_option_lead.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-option-lead
+          path: strategy_70_option_lead.json
+          if-no-files-found: error

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "scripts/search_morning_orb_open_8m.py"
+      - "scripts/report_morning_orb_open_8m.py"
       - ".github/workflows/morning-orb-upstox-8m.yml"
   workflow_dispatch:
 
@@ -21,8 +22,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Run open-data 8-month morning ORB screen
+      - name: Run strict open-data screen
         run: python scripts/search_morning_orb_open_8m.py
+      - name: Run full 8-month exploratory report
+        run: python scripts/report_morning_orb_open_8m.py
       - name: Upload research evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -31,4 +34,6 @@ jobs:
           path: |
             morning_orb_open_8m.json
             morning_orb_open_8m_trades.csv
+            morning_orb_open_8m_full.json
+            morning_orb_open_8m_full_trades.csv
           if-no-files-found: warn

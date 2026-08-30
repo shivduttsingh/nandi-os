@@ -1,0 +1,58 @@
+name: PROFIT FIRST forward paper record
+
+on:
+  schedule:
+    # 17:00 IST, Monday-Friday. The strategy window and 30-bar exits are complete by then.
+    - cron: '30 11 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Optional trading date to record (YYYY-MM-DD)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: profit-first-forward-record
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Record frozen forward-paper day
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          PROFIT_FIRST_DATE: ${{ inputs.date }}
+        run: python scripts/record_profit_first_forward.py
+
+      - name: Commit new forward evidence
+        shell: bash
+        run: |
+          if git diff --quiet -- forward_data/profit_first_trades.csv forward_data/profit_first_runs.csv; then
+            echo "No forward-data change to commit."
+            exit 0
+          fi
+          git config user.name "nandi-forward-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add forward_data/profit_first_trades.csv forward_data/profit_first_runs.csv
+          git commit -m "data: record PROFIT FIRST forward paper [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

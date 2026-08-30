@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import date
+import os
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
-from nandi_v2.profit_first import PUBLIC_DATA_URL, run_public_backtest
+from nandi_oi.configuration import is_configured_value
+from nandi_v2.profit_first import UpstoxProfitFirstHistory
 from nandi_v2.profit_first_reporting import (
     all_period_summaries,
     read_forward_ledger,
@@ -14,6 +17,8 @@ from nandi_v2.profit_first_reporting import (
     validation_status,
 )
 
+IST = ZoneInfo("Asia/Kolkata")
+
 st.set_page_config(page_title="PROFIT FIRST · Validation", page_icon="V", layout="wide")
 
 if not st.session_state.get("logged_in", False):
@@ -21,9 +26,14 @@ if not st.session_state.get("logged_in", False):
     st.stop()
 
 
-@st.cache_data(show_spinner=False, ttl=86_400)
-def cached_public_backtest(start_iso: str, end_iso: str):
-    return run_public_backtest(date.fromisoformat(start_iso), date.fromisoformat(end_iso))
+def configured_token() -> str:
+    token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
+    if not is_configured_value(token):
+        try:
+            token = str(st.secrets.get("upstox", {}).get("access_token", ""))
+        except Exception:
+            token = ""
+    return token if is_configured_value(token) else ""
 
 
 def with_rupees(frame: pd.DataFrame, quantity: int) -> pd.DataFrame:
@@ -73,7 +83,7 @@ def render_periods(trades: pd.DataFrame, quantity: int) -> None:
 
 st.title("PROFIT FIRST · Validation Center")
 st.caption(
-    "Frozen strategy rule. Historical backtest and forward-paper evidence are reported separately so live results cannot be confused with backtest results."
+    "Frozen strategy rule. Historical backtest and forward-paper evidence are reported separately. All market data in this validation flow comes from Upstox."
 )
 
 left, right = st.columns([2, 1])
@@ -95,6 +105,7 @@ with right:
         )
     )
 
+st.success("Nandi PROFIT FIRST data source: UPSTOX ONLY")
 st.page_link("pages/8_PROFIT_FIRST.py", label="Open PROFIT FIRST live paper + Upstox backtest", icon="↗️")
 
 forward_tab, historical_tab, rules_tab = st.tabs(
@@ -104,7 +115,7 @@ forward_tab, historical_tab, rules_tab = st.tabs(
 with forward_tab:
     st.subheader("Persistent forward-paper record")
     st.caption(
-        "This section reads the durable evidence files produced after each trading day. It does not reuse the historical proof table."
+        "This section reads durable forward evidence produced from Upstox after each trading day. Historical backtests are kept separate."
     )
     ledger = read_forward_ledger()
     runs = read_forward_runs()
@@ -112,7 +123,7 @@ with forward_tab:
 
     if runs.empty:
         st.warning(
-            "No end-of-day forward collector run has been recorded yet. After this feature is merged, the scheduled GitHub worker records each weekday after the market closes."
+            "No end-of-day forward collector run has been recorded yet. The scheduled worker records each weekday after the market closes."
         )
     else:
         latest = runs.sort_values("test_date").iloc[-1]
@@ -150,60 +161,82 @@ with forward_tab:
             st.dataframe(trade_view, use_container_width=True, hide_index=True)
 
 with historical_tab:
-    st.subheader("Historical backtest with daily, weekly and monthly breakdown")
+    st.subheader("Upstox historical backtest with daily, weekly and monthly breakdown")
     st.caption(
-        "Public one-minute NIFTY + ATM-option sample. Coverage: 3 Jul 2025–30 Jun 2026. "
-        "This remains historical evidence, not forward evidence."
+        "Historical NIFTY 1-minute and nearest-expiry ATM CE/PE option candles are read from Upstox only. "
+        "Expired-option history requires Upstox Plus. Each run is limited to 32 calendar days, so test longer history month by month."
     )
-    dates = st.columns(2)
-    start_date = dates[0].date_input(
-        "From",
-        value=date(2026, 1, 1),
-        min_value=date(2025, 7, 3),
-        max_value=date(2026, 6, 30),
-        key="pf_validation_public_from",
-    )
-    end_date = dates[1].date_input(
-        "To",
-        value=date(2026, 6, 30),
-        min_value=date(2025, 7, 3),
-        max_value=date(2026, 6, 30),
-        key="pf_validation_public_to",
-    )
-    st.caption(f"Dataset: {PUBLIC_DATA_URL}")
+    token = configured_token()
+    if not token:
+        st.warning(
+            "The read-only Upstox token is not available in this Streamlit session. Add or refresh the Upstox token to run historical backtests."
+        )
+    else:
+        last_complete_date = datetime.now(IST).date() - timedelta(days=1)
+        minimum = date(2020, 1, 1)
+        default_start = max(minimum, last_complete_date.replace(day=1))
+        dates = st.columns(2)
+        start_date = dates[0].date_input(
+            "From",
+            value=default_start,
+            min_value=minimum,
+            max_value=last_complete_date,
+            key="pf_validation_upstox_from",
+        )
+        end_date = dates[1].date_input(
+            "To",
+            value=last_complete_date,
+            min_value=minimum,
+            max_value=last_complete_date,
+            key="pf_validation_upstox_to",
+        )
+        st.caption(
+            f"Last completed calendar date available for selection: {last_complete_date}. "
+            "Weekends and exchange holidays inside a range naturally return no candles for those dates."
+        )
 
-    if st.button("Run frozen historical validation", type="primary", use_container_width=True):
-        if start_date > end_date:
-            st.error("From date must be on or before To date.")
-        else:
-            try:
-                with st.spinner("Replaying the frozen rule candle by candle..."):
-                    summary, trades, _, _ = cached_public_backtest(
-                        start_date.isoformat(), end_date.isoformat()
-                    )
-            except Exception as exc:
-                st.error(f"Historical backtest failed: {exc}")
+        if st.button("Run Upstox historical validation", type="primary", use_container_width=True):
+            if start_date > end_date:
+                st.error("From date must be on or before To date.")
+            elif (end_date - start_date).days > 31:
+                st.error("Choose a range of 32 calendar days or less. Test longer history month by month.")
+            elif start_date == end_date and start_date.weekday() >= 5:
+                st.warning(
+                    f"{start_date} is a weekend, so NSE has no NIFTY/option candles to backtest. Choose a trading day."
+                )
             else:
-                st.session_state["pf_validation_summary"] = summary
-                st.session_state["pf_validation_trades"] = trades
+                try:
+                    with st.spinner("Reading NIFTY + nearest-expiry ATM option history from Upstox..."):
+                        history = UpstoxProfitFirstHistory(token)
+                        summary, trades, _, _ = history.run_backtest(start_date, end_date)
+                except Exception as exc:
+                    st.error(f"Upstox historical backtest failed: {exc}")
+                else:
+                    st.session_state["pf_validation_summary"] = summary
+                    st.session_state["pf_validation_trades"] = trades
+                    st.session_state["pf_validation_range"] = f"{start_date} to {end_date}"
 
-    summary = st.session_state.get("pf_validation_summary")
-    trades = st.session_state.get("pf_validation_trades")
-    if summary is not None and isinstance(trades, pd.DataFrame):
-        st.divider()
-        render_summary(summary, quantity)
-        render_periods(trades, quantity)
-        with st.expander("Exact historical trade ledger"):
-            view = trades.copy()
-            view[f"rupee_pnl_at_{quantity}"] = pd.to_numeric(
-                view["pnl"], errors="coerce"
-            ).fillna(0.0).map(lambda value: rupee_pnl(value, quantity))
-            st.dataframe(view, use_container_width=True, hide_index=True)
+        summary = st.session_state.get("pf_validation_summary")
+        trades = st.session_state.get("pf_validation_trades")
+        result_range = st.session_state.get("pf_validation_range")
+        if summary is not None and isinstance(trades, pd.DataFrame):
+            st.divider()
+            st.caption(f"Result source: Upstox · range: {result_range}")
+            render_summary(summary, quantity)
+            render_periods(trades, quantity)
+            with st.expander("Exact historical trade ledger"):
+                view = trades.copy()
+                view[f"rupee_pnl_at_{quantity}"] = pd.to_numeric(
+                    view["pnl"], errors="coerce"
+                ).fillna(0.0).map(lambda value: rupee_pnl(value, quantity))
+                st.dataframe(view, use_container_width=True, hide_index=True)
 
 with rules_tab:
     st.subheader("How Nandi will judge this strategy")
     st.markdown(
         """
+**Single data source:** Upstox is the only market-data source used for PROFIT FIRST live, historical and forward-paper testing inside Nandi.
+
 **Backtest and forward results stay separate.** A profitable historical result does not make the strategy live-validated.
 
 **Forward evidence gate:**

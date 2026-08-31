@@ -1,0 +1,34 @@
+name: Morning Trend Pullback Open Data 8M screen
+
+on:
+  pull_request:
+    paths:
+      - "scripts/search_morning_trend_pullback_open_8m.py"
+      - ".github/workflows/morning-trend-pullback-open-8m.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run 8-month morning trend-pullback screen
+        run: python scripts/search_morning_trend_pullback_open_8m.py
+      - name: Upload research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morning-trend-pullback-open-8m
+          path: |
+            morning_trend_pullback_open_8m.json
+            morning_trend_pullback_open_8m_trades.csv
+          if-no-files-found: warn

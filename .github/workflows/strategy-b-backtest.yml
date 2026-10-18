@@ -1,0 +1,45 @@
+name: Strategy B realistic backtest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'strategy_b/**'
+      - 'pages/8_STRATEGY_B.py'
+      - 'scripts/run_strategy_b_backtest.py'
+      - 'tests/test_strategy_b.py'
+      - 'requirements.txt'
+      - '.github/workflows/strategy-b-backtest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Strategy B tests
+        run: pytest -q tests/test_strategy_b.py
+
+      - name: Run development and unseen validation backtest
+        run: python scripts/run_strategy_b_backtest.py --output strategy_b_backtest_results.json
+
+      - name: Upload evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-b-backtest-results
+          path: strategy_b_backtest_results.json
+          if-no-files-found: error

@@ -1,0 +1,58 @@
+{
+  "strategy": "Strategy B v2 selective breakout trigger",
+  "status": "REJECTED",
+  "reason": "Failed untouched May out-of-sample validation. June stress was weakly positive, but the failed holdout disqualifies this version for live use.",
+  "methodology": {
+    "development_window": "2026-04-01 to 2026-04-30",
+    "untouched_validation_window": "2026-05-01 to 2026-05-31",
+    "post_selection_stress_window": "2026-06-01 to 2026-06-30",
+    "validation_used_for_selection": false,
+    "stress_used_for_selection": false,
+    "selected_profile": "SELECTIVE",
+    "execution": "Buy-stop above ATM option signal candle high for up to 3 minutes; dynamic stop based on premium percentage / ATR with a width cap; 1.9R target; max two trades/day; conservative same-candle ambiguity handling."
+  },
+  "development": {
+    "tested_days": 20,
+    "trades": 31,
+    "wins": 7,
+    "losses": 14,
+    "timeouts": 10,
+    "target_win_rate_pct": 22.58,
+    "profitable_trade_rate_pct": 45.16,
+    "net_points_after_friction": 38.72,
+    "expectancy_points_per_trade": 1.25,
+    "profit_factor": 1.22,
+    "max_drawdown_points": 69.18
+  },
+  "validation": {
+    "tested_days": 19,
+    "trades": 27,
+    "wins": 7,
+    "losses": 15,
+    "timeouts": 5,
+    "target_win_rate_pct": 25.93,
+    "profitable_trade_rate_pct": 33.33,
+    "net_points_after_friction": -28.66,
+    "expectancy_points_per_trade": -1.06,
+    "profit_factor": 0.85,
+    "max_drawdown_points": 113.22
+  },
+  "stress_june": {
+    "tested_days": 21,
+    "trades": 29,
+    "wins": 9,
+    "losses": 17,
+    "timeouts": 3,
+    "target_win_rate_pct": 31.03,
+    "profitable_trade_rate_pct": 41.38,
+    "net_points_after_friction": 12.6,
+    "expectancy_points_per_trade": 0.43,
+    "profit_factor": 1.08,
+    "max_drawdown_points": 62.09
+  },
+  "ci": {
+    "workflow_run": 33012720872,
+    "execution_tests": "3 passed",
+    "evidence_artifact_id": 9623301417
+  }
+}

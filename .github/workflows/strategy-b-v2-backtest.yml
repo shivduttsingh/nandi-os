@@ -1,0 +1,43 @@
+name: Strategy B v2 validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'strategy_b/v2_backtest.py'
+      - 'scripts/run_strategy_b_v2_backtest.py'
+      - 'tests/test_strategy_b_v2.py'
+      - '.github/workflows/strategy-b-v2-backtest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-validate-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Strategy B v2 execution tests
+        run: pytest -q tests/test_strategy_b_v2.py
+
+      - name: Run April development, untouched May validation, and June stress
+        run: python scripts/run_strategy_b_v2_backtest.py --output strategy_b_v2_backtest_results.json
+
+      - name: Upload Strategy B v2 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-b-v2-backtest-results
+          path: strategy_b_v2_backtest_results.json
+          if-no-files-found: error

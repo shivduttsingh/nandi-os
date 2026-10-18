@@ -1,0 +1,40 @@
+name: Strategy 70 walk-forward search
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_walkforward.py'
+      - '.github/workflows/strategy-70-walkforward.yml'
+      - 'test1/public_backtest.py'
+      - 'nandi_oi/**'
+
+permissions:
+  contents: read
+
+jobs:
+  search-70:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run strict walk-forward search
+        run: python scripts/search_strategy_70_walkforward.py --output strategy_70_walkforward.json
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-walkforward
+          path: strategy_70_walkforward.json
+          if-no-files-found: error

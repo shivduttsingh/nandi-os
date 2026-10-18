@@ -1,0 +1,31 @@
+name: Strategy 70 micro proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/search_strategy_70_option_impulse.py'
+      - 'scripts/search_strategy_70_micro.py'
+      - '.github/workflows/strategy-70-micro.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  micro-70-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Run micro-target monthly walk-forward
+        run: python scripts/search_strategy_70_micro.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-70-micro
+          path: strategy_70_micro.json
+          if-no-files-found: error

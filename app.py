@@ -104,6 +104,7 @@ st.markdown("""
 
 if "live_market" not in st.session_state:
     st.session_state.live_market = None
+live = st.session_state.live_market
 
 with st.sidebar:
     st.markdown("## ATLAS")

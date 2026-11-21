@@ -36,6 +36,16 @@ def upstox_chain_frame(snapshot):
         "volume": leg.volume, "bid": leg.bid, "ask": leg.ask
     } for leg in snapshot.legs])
 
+def window_chain_frame(frame, spot, wings=8):
+    if frame.empty or "strike" not in frame.columns or not spot:
+        return frame
+    strikes = sorted(frame["strike"].dropna().unique())
+    if not strikes:
+        return frame
+    atm = min(range(len(strikes)), key=lambda i: abs(float(strikes[i]) - float(spot)))
+    selected = set(strikes[max(0, atm-wings):min(len(strikes), atm+wings+1)])
+    return frame[frame["strike"].isin(selected)].sort_values("strike").reset_index(drop=True)
+
 def nse_chain_frame(snapshot):
     return pd.DataFrame([{
         "strike": row.strike, "CE LTP": row.ce.ltp, "CE OI": row.ce.oi,
@@ -291,12 +301,16 @@ elif page == "Data & Controls":
         token = read_upstox_token()
         if token:
             try:
-                up = UpstoxOptionChainClient(access_token=token, expiry=expiry_choice)
+                client_key = f"{token[-6:]}:{expiry_choice}"
+                if st.session_state.get("upstox_client_key") != client_key:
+                    st.session_state.upstox_client = UpstoxOptionChainClient(access_token=token, expiry=expiry_choice)
+                    st.session_state.upstox_client_key = client_key
+                up = st.session_state.upstox_client
                 opt = up.fetch_snapshot()
                 candles = up.fetch_intraday_candles(interval_minutes=5)
                 live_result["upstox_spot"] = opt.spot
                 live_result["upstox_time"] = opt.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                live_result["upstox_chain"] = upstox_chain_frame(opt)
+                live_result["upstox_chain"] = window_chain_frame(upstox_chain_frame(opt), opt.spot, wings=8)
                 live_result["candles"] = candles
                 st.session_state.bars = candles_to_frame(candles)
                 st.session_state.data_label = f"Upstox intraday snapshot · {len(candles)} candles"
@@ -309,7 +323,7 @@ elif page == "Data & Controls":
             nse_client = st.session_state.nse_client
             nse_chain = nse_client.fetch_option_chain("NIFTY")
             nse_spot, nse_spot_time = nse_client.fetch_nifty_spot()
-            live_result["nse_chain"] = nse_chain_frame(nse_chain)
+            live_result["nse_chain"] = window_chain_frame(nse_chain_frame(nse_chain), nse_chain.spot, wings=8)
             live_result["nse_time"] = nse_chain.raw_timestamp
             live_result["nse_spot"] = nse_spot
             live_result["nse_spot_time"] = nse_spot_time.strftime("%Y-%m-%d %H:%M:%S")

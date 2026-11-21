@@ -287,11 +287,9 @@ elif page == "Data & Controls":
     st.markdown("### Live read-only market snapshot")
     expiry_choice = st.selectbox("Upstox expiry", ["current_week", "current_month"], index=0)
     if st.button("Fetch Upstox + NSE data", type="primary"):
+        live_result = {"captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         token = read_upstox_token()
-        if not token:
-            st.error("Upstox access token is not configured. Add [upstox].access_token in Streamlit Secrets; never paste the token into the public app or GitHub.")
-        else:
-            live_result = {"captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        if token:
             try:
                 up = UpstoxOptionChainClient(access_token=token, expiry=expiry_choice)
                 opt = up.fetch_snapshot()
@@ -301,24 +299,26 @@ elif page == "Data & Controls":
                 live_result["upstox_chain"] = upstox_chain_frame(opt)
                 live_result["candles"] = candles
                 st.session_state.bars = candles_to_frame(candles)
-                st.session_state.data_label = f"Upstox live intraday · {len(candles)} candles"
+                st.session_state.data_label = f"Upstox intraday snapshot · {len(candles)} candles"
                 st.success("Upstox option chain and intraday candles fetched.")
             except Exception as exc:
                 st.error(f"Upstox fetch failed: {exc}")
-            try:
-                nse_client = st.session_state.nse_client
-                nse_chain = nse_client.fetch_option_chain("NIFTY")
-                nse_spot, nse_spot_time = nse_client.fetch_nifty_spot()
-                live_result["nse_chain"] = nse_chain_frame(nse_chain)
-                live_result["nse_time"] = nse_chain.raw_timestamp
-                live_result["nse_spot"] = nse_spot
-                live_result["nse_spot_time"] = nse_spot_time.strftime("%Y-%m-%d %H:%M:%S")
-                st.success("NSE option-chain snapshot fetched.")
-            except Exception as exc:
-                st.warning(f"NSE public-site snapshot unavailable: {exc}")
-            if live_result.get("upstox_chain") is not None or live_result.get("nse_chain") is not None:
-                st.session_state.live_market = live_result
-                st.rerun()
+        else:
+            st.warning("Upstox token is not configured. NSE public-site fetch will still be attempted.")
+        try:
+            nse_client = st.session_state.nse_client
+            nse_chain = nse_client.fetch_option_chain("NIFTY")
+            nse_spot, nse_spot_time = nse_client.fetch_nifty_spot()
+            live_result["nse_chain"] = nse_chain_frame(nse_chain)
+            live_result["nse_time"] = nse_chain.raw_timestamp
+            live_result["nse_spot"] = nse_spot
+            live_result["nse_spot_time"] = nse_spot_time.strftime("%Y-%m-%d %H:%M:%S")
+            st.success("NSE option-chain snapshot fetched.")
+        except Exception as exc:
+            st.warning(f"NSE public-site snapshot unavailable: {exc}")
+        if live_result.get("upstox_chain") is not None or live_result.get("nse_chain") is not None:
+            st.session_state.live_market = live_result
+            st.rerun()
     st.caption("Refresh is manual, not a tick stream. NSE public-site access is best-effort and may be rate-limited; use an authorised/licensed feed for production decisions.")
     st.divider()
     st.markdown("### Import historical / replay data")
@@ -357,4 +357,4 @@ elif page == "Data & Controls":
     st.caption("Lot size, premium affordability and exchange contract specifications must be checked against the current contract master before any option-level simulation.")
 
 st.divider()
-st.caption("ATLAS Research Build 0.1 · Not investment advice · Paper research only · No guaranteed returns · Live feeds and option-level backtesting are not yet enabled.")
+st.caption("ATLAS Research Build 0.1 · Not investment advice · Paper research only · Manual market snapshots · Option-level backtesting not yet enabled.")

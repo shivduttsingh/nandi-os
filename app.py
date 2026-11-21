@@ -1,13 +1,48 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from atlas_engine import REQUIRED, backtest, generate_signals, metrics, normalise_bars
+from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
+from nandi_v2.charting import candlestick_chart_html
+from nandi_v2.nse import NSEDataError, NSEPublicClient
+
+def read_upstox_token():
+    try:
+        value = st.secrets["upstox"]["access_token"]
+        if value and str(value).strip():
+            return str(value).strip()
+    except Exception:
+        pass
+    return os.getenv("UPSTOX_ACCESS_TOKEN", "").strip()
+
+def candles_to_frame(candles):
+    return pd.DataFrame([{
+        "timestamp": c.timestamp, "open": c.open, "high": c.high,
+        "low": c.low, "close": c.close, "volume": c.volume
+    } for c in candles])
+
+def upstox_chain_frame(snapshot):
+    return pd.DataFrame([{
+        "strike": leg.strike, "side": leg.side, "LTP": leg.ltp,
+        "change": leg.change_ltp, "OI": leg.oi, "change OI": leg.change_oi,
+        "volume": leg.volume, "bid": leg.bid, "ask": leg.ask
+    } for leg in snapshot.legs])
+
+def nse_chain_frame(snapshot):
+    return pd.DataFrame([{
+        "strike": row.strike, "CE LTP": row.ce.ltp, "CE OI": row.ce.oi,
+        "CE ΔOI": row.ce.change_oi, "CE volume": row.ce.volume,
+        "PE LTP": row.pe.ltp, "PE OI": row.pe.oi,
+        "PE ΔOI": row.pe.change_oi, "PE volume": row.pe.volume
+    } for row in snapshot.rows])
 
 DB_PATH = Path("atlas_paper_ledger.sqlite3")
 st.set_page_config(page_title="ATLAS | NIFTY Options Research", page_icon="A", layout="wide", initial_sidebar_state="expanded")
@@ -62,8 +97,12 @@ with st.sidebar:
     page = st.radio("Workspace", ["Command Centre","Strategy Lab","Backtest","Paper Ledger","Data & Controls"], label_visibility="collapsed")
     st.divider()
     st.caption("MARKET DATA")
-    st.error("Live feed not connected")
-    st.caption("No live NSE / Upstox values are being displayed. Import verified data in Data & Controls.")
+    if live:
+        st.success("Market snapshot loaded")
+        st.caption(f"Last manual refresh: {live.get('captured_at','—')} IST")
+    else:
+        st.error("Live feed not connected")
+        st.caption("Connect a read-only Upstox token and refresh data in Data & Controls.")
     st.divider()
     st.caption("RESEARCH CAPITAL")
     st.metric("Paper capital", "₹20,000")
@@ -73,8 +112,13 @@ if "bars" not in st.session_state:
     st.session_state.bars = None
 if "data_label" not in st.session_state:
     st.session_state.data_label = "No dataset loaded"
+if "live_market" not in st.session_state:
+    st.session_state.live_market = None
+if "nse_client" not in st.session_state:
+    st.session_state.nse_client = NSEPublicClient()
 
 bars = st.session_state.bars
+live = st.session_state.live_market
 signals = []
 if bars is not None:
     try:
@@ -85,11 +129,27 @@ if bars is not None:
 if page == "Command Centre":
     st.subheader("Command Centre")
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("NIFTY spot", "—", help="No live spot feed connected")
+    c1.metric("NIFTY spot", f"{live['upstox_spot']:,.2f}" if live and live.get("upstox_spot") else "—", help="Upstox option-chain underlying spot; last manually fetched snapshot")
     c2.metric("A / ORB signals", sum(s.strategy=="A" for s in signals))
     c3.metric("B / Failed breakout", sum(s.strategy=="B" for s in signals))
     c4.metric("Loaded bars", f"{len(bars):,}" if bars is not None else "0")
-    st.info("ATLAS is in research mode. It will not invent a price, option premium, OI reading, win rate or trade recommendation when the relevant feed is unavailable.")
+    if live:
+        nse_spot = live.get("nse_spot")
+        st.caption(f"Upstox snapshot: {live.get('upstox_time','—')} · NSE option-chain timestamp: {live.get('nse_time','—')} · NSE spot: {nse_spot:,.2f}" if nse_spot else f"Upstox snapshot: {live.get('upstox_time','—')} · NSE option-chain timestamp: {live.get('nse_time','—')}")
+        if live.get("candles"):
+            st.markdown("### NIFTY 50 · Upstox 5-minute candles")
+            components.html(candlestick_chart_html(live["candles"], interval_minutes=5, title="NIFTY 50", chart_height=420), height=490, scrolling=False)
+        chain_col1, chain_col2 = st.columns(2)
+        with chain_col1:
+            st.markdown("### Upstox option chain")
+            if live.get("upstox_chain") is not None:
+                st.dataframe(live["upstox_chain"], use_container_width=True, hide_index=True, height=360)
+        with chain_col2:
+            st.markdown("### NSE option chain")
+            if live.get("nse_chain") is not None:
+                st.dataframe(live["nse_chain"], use_container_width=True, hide_index=True, height=360)
+    else:
+        st.info("ATLAS is in research mode. It will not invent a price, option premium, OI reading, win rate or trade recommendation when the relevant feed is unavailable.")
     left,right = st.columns([1.3,1])
     with left:
         st.markdown("### Decision engine")
@@ -106,6 +166,8 @@ if page == "Command Centre":
     with right:
         st.markdown("### Current evidence")
         st.write("**Dataset:**", st.session_state.data_label)
+        st.write("**Upstox:**", "Connected snapshot" if live else "Not connected")
+        st.write("**NSE:**", "Snapshot loaded" if live and live.get("nse_chain") is not None else "Not loaded")
         st.write("**Signals found:**", len(signals))
         st.write("**Execution:** Paper only")
         st.write("**Broker routing:** Disabled")
@@ -222,6 +284,43 @@ elif page == "Paper Ledger":
 
 elif page == "Data & Controls":
     st.subheader("Data & Controls")
+    st.markdown("### Live read-only market snapshot")
+    expiry_choice = st.selectbox("Upstox expiry", ["current_week", "current_month"], index=0)
+    if st.button("Fetch Upstox + NSE data", type="primary"):
+        token = read_upstox_token()
+        if not token:
+            st.error("Upstox access token is not configured. Add [upstox].access_token in Streamlit Secrets; never paste the token into the public app or GitHub.")
+        else:
+            live_result = {"captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            try:
+                up = UpstoxOptionChainClient(access_token=token, expiry=expiry_choice)
+                opt = up.fetch_snapshot()
+                candles = up.fetch_intraday_candles(interval_minutes=5)
+                live_result["upstox_spot"] = opt.spot
+                live_result["upstox_time"] = opt.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                live_result["upstox_chain"] = upstox_chain_frame(opt)
+                live_result["candles"] = candles
+                st.session_state.bars = candles_to_frame(candles)
+                st.session_state.data_label = f"Upstox live intraday · {len(candles)} candles"
+                st.success("Upstox option chain and intraday candles fetched.")
+            except Exception as exc:
+                st.error(f"Upstox fetch failed: {exc}")
+            try:
+                nse_client = st.session_state.nse_client
+                nse_chain = nse_client.fetch_option_chain("NIFTY")
+                nse_spot, nse_spot_time = nse_client.fetch_nifty_spot()
+                live_result["nse_chain"] = nse_chain_frame(nse_chain)
+                live_result["nse_time"] = nse_chain.raw_timestamp
+                live_result["nse_spot"] = nse_spot
+                live_result["nse_spot_time"] = nse_spot_time.strftime("%Y-%m-%d %H:%M:%S")
+                st.success("NSE option-chain snapshot fetched.")
+            except Exception as exc:
+                st.warning(f"NSE public-site snapshot unavailable: {exc}")
+            if live_result.get("upstox_chain") is not None or live_result.get("nse_chain") is not None:
+                st.session_state.live_market = live_result
+                st.rerun()
+    st.caption("Refresh is manual, not a tick stream. NSE public-site access is best-effort and may be rate-limited; use an authorised/licensed feed for production decisions.")
+    st.divider()
     st.markdown("### Import historical / replay data")
     st.write("Upload a CSV with columns: timestamp, open, high, low, close, volume. Use 5-minute NIFTY candles in IST. Optional: vwap.")
     uploaded = st.file_uploader("Upload OHLCV CSV",type=["csv"])
@@ -245,9 +344,9 @@ elif page == "Data & Controls":
             st.rerun()
     st.divider()
     st.markdown("### Connectivity")
-    st.error("Upstox: not connected in this release")
-    st.error("NSE authorised feed: not connected in this release")
-    st.info("Live data integration is deliberately not simulated. A secure read-only connector and the appropriate market-data entitlements must be configured before ATLAS can show live spot, option-chain OI, IV, Greeks or premiums.")
+    st.write("**Upstox:**", "Read-only API adapter included; token status: configured" if read_upstox_token() else "Not configured")
+    st.write("**NSE:**", "Public-site adapter included; not a licensed institutional feed")
+    st.info("Upstox access is read-only. NSE public-site snapshots are best-effort and may be rate-limited; obtain appropriate exchange data entitlements for production use. The app never routes broker orders.")
     st.markdown("### Risk controls — initial research defaults")
     st.write("- Starting paper capital: ₹20,000")
     st.write("- Maximum planned loss per trade: ₹300")

@@ -1,31 +1,25 @@
-# Nandi V2
+# ATLAS — NIFTY Options Research Terminal
 
-Nandi V2 is a private, explainable NIFTY options research dashboard built around one unified decision path: fundamental context, technical-family consensus, OI/execution evidence and a stable risk lifecycle.
+ATLAS replaces the former Nandi user interface in this repository. It is a browser-based Streamlit research terminal for NIFTY intraday options, strategy comparison and paper-trade recordkeeping.
 
-## Current architecture
+## Current release: Research Build 0.1
 
-- **NSE option chain:** nearest expiry, ATM ±5 strikes only.
-- **NSE NIFTY spot:** used for the live price and limited decision-context fallback; it is never converted into guessed OHLC candles.
-- **Upstox candles:** optional read-only V3 historical + intraday OHLCV supplies the visible NIFTY 50 chart, completed 15-minute technical evidence and the exact nearest-expiry ATM CE/PE premium charts.
-- **Chart rendering:** NIFTY 50 and both ATM option charts use the same candlestick renderer and Upstox market-data source. The chart path contains no broker-order action.
-- **NIFTY + ATM confirmation:** an additional paper-validation strategy compares matching completed NIFTY, ATM CE and ATM PE candles and reports CONFIRM CE, CONFIRM PE, WAIT or UNAVAILABLE. Its agreement score is not a win probability and does not change the final BUY gate before validation.
-- **Separate ATM ±2 confirmation:** preserves the single-ATM strategy and adds a second paper-validation strategy using ATM, one and two strikes below, and one and two strikes above. It requires matching NIFTY direction, a robust median premium move, positive breadth across at least four of five strikes and same-strike CE/PE dominance. Ten read-only option charts are arranged as a five-chart CE column and five-chart PE column.
-- **Unified engine:** independently scores CE and PE from market structure, rolling OI positioning, premium confirmation, location, momentum, volume, reward-risk and data freshness.
-- **Fundamental Desk:** stores sourced, freshness-gated global, macro, flow, heavyweight-earnings and event-risk inputs.
-- **Technical Lab:** exposes 25 indicators grouped into five evidence families so correlated indicators cannot dominate the decision by count alone.
-- **Confluence gate:** the OI engine proposes the side; technical and fundamental pillars may confirm or veto it. Missing, stale, sideways or conflicting pillars block a new trade.
-- **Option execution plan:** every confirmed setup identifies the nearest-expiry ATM CE/PE contract, current NSE quote, conservative ask/LTP entry reference, 5% premium stop and 1.5R/2.5R premium targets. Missing premiums and bid/ask spreads above 3% block BUY. Premium monitoring follows the configured option-chain refresh and is not broker tick data.
-- **Rolling OI:** Nandi compares successive successful NSE snapshots instead of treating exchange day-level COI as short-term movement. The first snapshot is a neutral baseline.
-- **Trade gate:** BUY CE or BUY PE requires both the OI proposal and final weighted confluence score to reach 75+ by default, plus directional edge, fresh data and no hard blocker.
-- **Confirmation:** default three distinct fresh NSE option-chain snapshots on the same side before BUY.
-- **NSE session gate:** closed/pre-market/weekend/configured-holiday states cannot emit a live BUY.
-- **Email gate:** only confirmed BUY CE / BUY PE setups at score 80+ are eligible for email; successful entry alerts are deduplicated.
-- **Trade lifecycle:** PREPARE -> ACTIVE -> HOLD -> BOOK PARTIAL / TRAIL -> EXIT, with a default 15-minute minimum hold, 45-minute maximum hold and 5-minute reversal cooldown. Spot or premium stops and targets remain immediate risk exits.
-- **Persistence:** decisions, lifecycle transitions, alerts and captured replay frames are stored in SQLite.
-- **Results:** completed lifecycle events are summarized daily, weekly and monthly in recorded option-premium results when available, alongside underlying NIFTY points. Missing premiums are never estimated.
-- **Replay:** stored NSE frames can be deterministically re-run through the V2 engine and the same confirmation/lifecycle logic.
-- **No broker orders:** research and paper-observation only.
-- **No broker fallback:** missing or stale NSE option-chain data produces NO TRADE. Missing Upstox candles fall back to the NSE spot chart and never trigger broker activity.
+### Included
+- Strategy A: opening-range breakout continuation.
+- Strategy B: failed-breakout reversal.
+- Strategy C: combined selector that rejects conflicting same-bar directions.
+- CSV import for timestamped 5-minute NIFTY OHLCV research data.
+- Historical signal review and underlying-points backtest with configurable reward/risk and cost assumption.
+- SQLite paper ledger for manually recording observed option symbol, CE/PE, expiry, quantity, entry premium, stop, target and exit premium.
+- ₹20,000 starting paper-capital display and initial research risk controls.
+- No broker-order routing.
+
+### Important limitations — do not mistake these for completed capabilities
+- **Live market data is not connected in this release.** No live NIFTY spot, option-chain OI, IV, Greeks, bid/ask or option premium is displayed.
+- The included backtest evaluates signals on the NIFTY underlying OHLCV series. It is **not** an options-premium backtest and does not model option expiry, volatility, theta, spreads, slippage at option quotes, lot-size affordability or exchange/broker charges.
+- The paper ledger records manually observed option premiums. It does not submit orders or automatically fill trades.
+- SQLite storage on a hosted ephemeral filesystem may not survive app restarts or container replacement. Export the ledger regularly until durable database storage is configured.
+- No performance claim, win rate or expected monthly income is asserted. A strategy must pass out-of-sample, walk-forward and option-level paper validation before it is considered eligible for real capital.
 
 ## Run locally
 
@@ -34,49 +28,36 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Configure credentials with environment variables or Streamlit Secrets:
+The app uses Python as its Streamlit server runtime; the user experience is a browser website, not a notebook.
 
-```toml
-[auth]
-username = "your-user"
-password = "your-password"
+## CSV format
 
-[alerts]
-host = "smtp.example.com"
-port = 587
-username = "smtp-user"
-password = "smtp-password"
-sender = "sender@example.com"
-recipient = "recipient@example.com"
-use_tls = true
+Required columns:
 
-[nse]
-holidays = ["YYYY-MM-DD"]
-
-[upstox]
-access_token = "YOUR_READ_ONLY_ACCESS_TOKEN"
+```csv
+timestamp,open,high,low,close,volume
+2026-11-20 09:15:00,26000,26020,25990,26010,12345
 ```
 
-The Upstox token is optional, but required for technical candles, completed-candle structure and the live ATM CE/PE premium charts. Do not commit real credentials.
+Optional column: `vwap`. Use consistent 5-minute candles in India Standard Time. The opening-range logic expects at least two candles between 09:15 and 09:30.
 
-## Application pages
+## Risk and safety
+- Research capital display: ₹20,000.
+- Initial per-trade planned risk limit: ₹300.
+- Initial daily loss limit: ₹600.
+- Maximum two entries per day; one concurrent paper position.
+- Minimum planned reward/risk target: 2:1.
+- No overnight positions.
+- No live broker orders or order-routing API.
 
-- **Command Center:** read-only Upstox NIFTY 50 chart, the existing side-by-side ATM CE/PE charts, the separate ATM ±2 ten-chart window, both paper chart-confirmation strategies, three-pillar agreement, exact contract plan, premium/spot risk levels and hold guidance.
-- **NIFTY Option Charts:** dedicated Upstox NIFTY 50 chart, the unchanged nearest-expiry ATM CE/PE pair, and the separate ATM ±2 CE/PE chart columns, all read only.
-- **Fundamental Desk:** sourced market-context snapshot, coverage, freshness and bias.
-- **Technical Lab:** Nandi Top 10 operator view, family consensus and all 25 individual indicator calculations, with source/range/coverage visibility.
-- **OI & Execution:** score components, limited ATM ±5 NSE table and freshness/session status.
-- **History:** decision history and persisted lifecycle transitions.
-- **Replay:** deterministic replay of NSE frames captured by Nandi.
-- **Results:** daily, weekly and monthly completed-trade summaries plus an auditable ledger.
-- **Settings:** decision thresholds, stable hold/cooldown controls, refresh cadence and configuration status.
+These are initial configuration defaults, not evidence of suitability or profitability. Current exchange lot sizes and contract specifications must be checked before any option-level simulation.
 
-## Important data note
+## Next engineering gates
+1. Secure read-only Upstox integration for spot/candles and authorised option-market data.
+2. Licensed/authorised NSE option-chain data with source timestamps, freshness checks and rate-limit controls.
+3. Option contract master, expiry/strike selection and realistic bid/ask paper fills.
+4. Chronological backtest engine with transaction costs, expiry mapping, no look-ahead bias and walk-forward splits.
+5. Durable database, scheduled data workers, health monitoring and audit logs.
+6. At least 30 sessions of forward paper validation, with sufficient trade count and confidence intervals, before strategy promotion.
 
-The included NSE public-site adapter is conservative and rate-limited. The screen can recalculate every second from the latest valid state, but it does not claim that NSE OI changes every second. Each source timestamp is shown separately. The forming Upstox candle is displayed but excluded from completed-candle market structure. For production-grade or licensed real-time use, replace `NSEPublicClient` with an authorised NSE Data feed while preserving the same models and engine interface.
-
-The Nandi score is a setup-quality score, not a guaranteed probability of profit. New fundamental inputs initially come from the authenticated research desk; authorised automated providers can later write to the same auditable factor contract.
-
-See `NANDI_ARCHITECTURE.md` for the complete three-pillar design, accuracy programme and multi-user delivery phases.
-
-See `NANDI_V2_RELEASE.md` for the deployment checklist.
+ATLAS is research software only. It is not investment advice and does not guarantee returns.

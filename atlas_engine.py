@@ -33,6 +33,7 @@ def normalise_bars(frame: pd.DataFrame) -> pd.DataFrame:
         df["vwap"] = pd.to_numeric(df["vwap"], errors="coerce")
     else:
         df["vwap"] = (df["high"] + df["low"] + df["close"]) / 3
+    df["volume_baseline"] = df.groupby(df["timestamp"].dt.date)["volume"].transform(lambda s: s.shift(1).rolling(10, min_periods=3).median())
     return df
 
 def _opening_ranges(df: pd.DataFrame) -> dict:
@@ -55,7 +56,6 @@ def generate_signals(frame: pd.DataFrame, max_hold_bars: int = 9) -> list[Signal
         post = [i for i in idxs if df.loc[i, "timestamp"].hour > 9 or (df.loc[i, "timestamp"].hour == 9 and df.loc[i, "timestamp"].minute >= 30)]
         if len(post) < 3:
             continue
-        vol_median = float(g["volume"].rolling(10, min_periods=3).median().median())
         a_emitted = False
         b_emitted = False
         for pos, i in enumerate(post):
@@ -64,7 +64,7 @@ def generate_signals(frame: pd.DataFrame, max_hold_bars: int = 9) -> list[Signal
                 prev = df.loc[post[pos-1]]
                 long_retest = row["low"] <= hi * 1.0015 and row["close"] > hi and row["close"] >= row["open"]
                 short_retest = row["high"] >= lo * 0.9985 and row["close"] < lo and row["close"] <= row["open"]
-                vol_ok = row["volume"] >= max(1.0, vol_median)
+                vol_ok = pd.notna(row["volume_baseline"]) and row["volume"] >= max(1.0, float(row["volume_baseline"]))
                 vwap_ok_long = row["close"] >= row["vwap"]
                 vwap_ok_short = row["close"] <= row["vwap"]
                 if long_retest and vol_ok and vwap_ok_long and prev["close"] > hi:
@@ -96,9 +96,15 @@ def backtest(frame: pd.DataFrame, strategy: str = "C", risk_reward: float = 2.0,
     df = normalise_bars(frame)
     sigs = generate_signals(df, max_hold_bars=max_hold_bars)
     chosen = []
-    for s in sigs:
-        if strategy == s.strategy or strategy == "C":
-            chosen.append(s)
+    if strategy == "C":
+        by_time: dict[str, list[Signal]] = {}
+        for sig in sigs:
+            by_time.setdefault(sig.timestamp, []).append(sig)
+        for same_bar in by_time.values():
+            if len({x.side for x in same_bar}) == 1:
+                chosen.append(max(same_bar, key=lambda x: x.score))
+    else:
+        chosen = [s for s in sigs if s.strategy == strategy]
     trades = []
     last_exit = -999
     for s in chosen:
@@ -144,5 +150,5 @@ def metrics(trades: pd.DataFrame) -> dict[str, Any]:
     losses = trades.loc[trades.net_points <= 0, "net_points"]
     gross_loss = abs(float(losses.sum()))
     equity = trades["net_points"].cumsum()
-    dd = equity - equity.cummax()
+    dd = equity - equity.cummax().clip(lower=0)
     return {"trades":len(trades),"win_rate":round(100*len(wins)/len(trades),1),"net_points":round(float(trades.net_points.sum()),2),"profit_factor":round(float(wins.sum())/gross_loss,2) if gross_loss else float("inf"),"max_drawdown":round(float(dd.min()),2),"expectancy":round(float(trades.net_points.mean()),2)}

@@ -13,6 +13,7 @@ from atlas_engine import REQUIRED, backtest, generate_signals, metrics, normalis
 from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_v2.charting import candlestick_chart_html
 from nandi_v2.nse import NSEDataError, NSEPublicClient
+from nandi_v2.strike_window_ui import render_strike_window_charts
 
 def read_upstox_token():
     try:
@@ -153,6 +154,16 @@ if page == "Command Centre":
         if live.get("candles"):
             st.markdown("### NIFTY 50 · Upstox 5-minute candles")
             components.html(candlestick_chart_html(live["candles"], interval_minutes=5, title="NIFTY 50", chart_height=420), height=490, scrolling=False)
+        if live.get("strike_window"):
+            st.markdown("### ATM ±2 option premium charts · CE and PE")
+            render_strike_window_charts(
+                live["candles"],
+                live["strike_window"],
+                observed_at=live.get("upstox_observed_at", datetime.now()),
+                interval_minutes=5,
+            )
+        else:
+            st.info("ATM ±2 option charts are not loaded. Fetch a fresh Upstox snapshot in Data & Controls.")
         chain_col1, chain_col2 = st.columns(2)
         with chain_col1:
             st.markdown("### Upstox option chain")
@@ -224,11 +235,47 @@ elif page == "Backtest":
     if bars is None:
         st.info("Load a timestamped 5-minute OHLCV CSV in Data & Controls.")
     else:
+        st.markdown("### Historical test window")
+        date_values = pd.to_datetime(bars["timestamp"], errors="coerce").dt.date
+        min_day, max_day = date_values.min(), date_values.max()
+        chosen_dates = st.date_input(
+            "Select start and end dates",
+            value=(min_day, max_day),
+            min_value=min_day,
+            max_value=max_day,
+            help="Backtest signals will be calculated only inside this selected historical window.",
+        )
+        if isinstance(chosen_dates, tuple) and len(chosen_dates) == 2:
+            start_day, end_day = chosen_dates
+        else:
+            start_day = end_day = chosen_dates
+        selected_bars = bars[(date_values >= start_day) & (date_values <= end_day)].copy()
+        if selected_bars.empty:
+            st.warning("No candles exist in the selected date window.")
+            st.stop()
+        st.caption(f"Testing {len(selected_bars):,} candles from {start_day} through {end_day}.")
+        st.markdown("### Selected NIFTY price history")
+        from nandi_oi.models import IntradayCandle
+        chart_candles = [
+            IntradayCandle(
+                timestamp=pd.Timestamp(row.timestamp).to_pydatetime(),
+                open=float(row.open), high=float(row.high), low=float(row.low),
+                close=float(row.close), volume=float(row.volume),
+            )
+            for row in selected_bars.itertuples(index=False)
+        ]
+        components.html(
+            candlestick_chart_html(
+                chart_candles, interval_minutes=5,
+                title="NIFTY 50 · selected historical window", chart_height=360,
+            ),
+            height=430, scrolling=False,
+        )
         c1,c2,c3 = st.columns(3)
         strategy = c1.selectbox("Model", ["A","B","C"], index=2)
         rr = c2.slider("Reward / risk", 1.0, 4.0, 2.0, 0.25)
         costs = c3.number_input("Estimated round-trip cost (underlying points)", min_value=0.0, value=1.0, step=0.25)
-        trades = backtest(bars, strategy=strategy, risk_reward=rr, cost_points=costs)
+        trades = backtest(selected_bars, strategy=strategy, risk_reward=rr, cost_points=costs)
         m = metrics(trades)
         a,b,c,d,e = st.columns(5)
         a.metric("Trades",m["trades"])
@@ -316,6 +363,18 @@ elif page == "Data & Controls":
                 live_result["upstox_time"] = opt.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                 live_result["upstox_chain"] = window_chain_frame(upstox_chain_frame(opt), opt.spot, wings=8)
                 live_result["candles"] = candles
+                live_result["upstox_observed_at"] = opt.timestamp
+                try:
+                    live_result["strike_window"] = up.fetch_option_window_intraday_candles(
+                        expiry=opt.expiry,
+                        spot=opt.spot,
+                        interval_minutes=5,
+                        wings=2,
+                    )
+                    st.success("ATM ±2 CE/PE premium charts fetched.")
+                except Exception as chart_exc:
+                    live_result["strike_window"] = None
+                    st.warning(f"ATM ±2 option charts could not be fetched: {chart_exc}")
                 st.session_state.bars = candles_to_frame(candles)
                 st.session_state.data_label = f"Upstox intraday snapshot · {len(candles)} candles"
                 st.success("Upstox option chain and intraday candles fetched.")

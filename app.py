@@ -102,6 +102,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+if "live_market" not in st.session_state:
+    st.session_state.live_market = None
+
 with st.sidebar:
     st.markdown("## ATLAS")
     page = st.radio("Workspace", ["Command Centre","Strategy Lab","Backtest","Paper Ledger","Data & Controls"], label_visibility="collapsed")

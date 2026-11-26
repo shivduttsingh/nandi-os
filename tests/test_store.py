@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from tempfile import TemporaryDirectory
 
 from nandi_oi.models import Decision, OptionLeg, OptionSnapshot
@@ -36,3 +36,34 @@ def test_store_persists_analysis_health_and_alerts():
         assert store.rsi_strategies() == {
             "RSI 14 — 24/72": {"length": 14, "lower": 24.0, "upper": 72.0}
         }
+
+
+def test_historical_snapshots_round_trip_in_chronological_order():
+    with TemporaryDirectory() as folder:
+        store = NandiStore(f"{folder}/atlas.db")
+        first, decision = sample_analysis()
+        second = OptionSnapshot(
+            datetime(2026, 8, 3, 10, 5), 25005, 5, 25015, 24985,
+            (OptionLeg(25000, "CE", 1100, 100, 125, 5, volume=700),
+             OptionLeg(25000, "PE", 1150, -50, 85, -5, volume=650)),
+            "2026-08-06",
+        )
+        store.save_analysis(second, decision)
+        store.save_analysis(first, decision)
+        rows = store.historical_snapshots()
+        assert len(rows) == 2
+        assert rows[0].timestamp == first.timestamp
+        assert rows[1].timestamp == second.timestamp
+        assert rows[1].legs[0].oi == 1100
+        assert rows[1].legs[0].side == "CE"
+
+
+def test_historical_snapshots_reject_reverse_date_range():
+    with TemporaryDirectory() as folder:
+        store = NandiStore(f"{folder}/atlas.db")
+        try:
+            store.historical_snapshots(date(2026, 8, 4), date(2026, 8, 3))
+        except ValueError as exc:
+            assert "on or before" in str(exc)
+        else:
+            raise AssertionError("Expected reverse-date validation")

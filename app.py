@@ -345,7 +345,7 @@ elif page == "Paper Ledger":
         st.info("No paper trades recorded yet.")
 
 elif page == "Chart Explorer":
-    render_chart_explorer(st, pd, live, bars, st.session_state.data_label)
+    render_chart_explorer(st, pd, live, bars, st.session_state.data_label, read_upstox_token())
 
 elif page == "Strategy Library":
     render_strategy_library(st, pd)

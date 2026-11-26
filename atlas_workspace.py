@@ -101,7 +101,52 @@ def _add_indicators(frame: pd.DataFrame, time_col: str, y_col: str, selected: li
     return fig
 
 
-def render_chart_explorer(st_module, pd_module, live, bars, data_label: str):
+def _fetch_upstox_history(token: str, instrument_key: str, unit: str, interval: int, start: date, end: date) -> pd.DataFrame:
+    import requests
+    from urllib.parse import quote
+    if not token:
+        raise ValueError("Add your private Upstox read-only access token in Streamlit secrets or the server environment.")
+    if start > end:
+        raise ValueError("Start date must be on or before end date.")
+    if unit == "minutes":
+        max_days = 30 if interval <= 15 else 89
+    elif unit == "hours":
+        max_days = 89
+    elif unit == "days":
+        max_days = 3650
+    else:
+        max_days = (end - start).days + 1
+    chunks = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(end, cursor + pd.Timedelta(days=max_days - 1).to_pytimedelta())
+        path = (
+            f"https://api.upstox.com/v3/historical-candle/{quote(instrument_key, safe='')}/"
+            f"{unit}/{interval}/{chunk_end.isoformat()}/{cursor.isoformat()}"
+        )
+        response = requests.get(path, headers={"Accept":"application/json","Authorization":f"Bearer {token}"}, timeout=25)
+        if response.status_code != 200:
+            raise RuntimeError(f"Upstox history request failed ({response.status_code}): {response.text[:400]}")
+        payload = response.json()
+        if payload.get("status") != "success":
+            raise RuntimeError(f"Upstox history returned an unsuccessful response: {payload}")
+        for row in (payload.get("data") or {}).get("candles") or []:
+            if len(row) >= 5:
+                chunks.append({
+                    "timestamp": row[0], "open": row[1], "high": row[2], "low": row[3],
+                    "close": row[4], "volume": row[5] if len(row) > 5 else 0,
+                    "open_interest": row[6] if len(row) > 6 else 0,
+                    "instrument_key": instrument_key, "unit": unit, "interval": interval,
+                })
+        cursor = chunk_end + pd.Timedelta(days=1).to_pytimedelta()
+    frame = pd.DataFrame(chunks)
+    if frame.empty:
+        raise RuntimeError("Upstox returned no historical candles for this instrument and date range.")
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+    return frame.dropna(subset=["timestamp"]).drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
+
+
+def render_chart_explorer(st_module, pd_module, live, bars, data_label: str, upstox_token: str = ""):
     st_module.subheader("Universal Chart Explorer")
     st_module.caption("Chart any available or uploaded dataset. Interactive zoom, pan, range selection, hover values and chart export are available through Plotly.")
     datasets: dict[str, pd.DataFrame] = {}
@@ -134,6 +179,30 @@ def render_chart_explorer(st_module, pd_module, live, bars, data_label: str):
         valid = _safe_frame(frame)
         if valid is not None:
             datasets[name] = valid
+    with st_module.expander("Fetch historical candles from Upstox for any instrument", expanded=False):
+        st_module.caption("Use an exact Upstox instrument key. Minute/hour availability and maximum request windows depend on the selected interval; ATLAS chunks requests to stay within documented limits.")
+        hx1, hx2 = st_module.columns([2,1])
+        instrument_key = hx1.text_input("Upstox instrument key", value="NSE_INDEX|Nifty 50", key="atlas_history_instrument")
+        unit = hx2.selectbox("Time unit", ["minutes","hours","days","weeks","months"], key="atlas_history_unit")
+        if unit == "minutes":
+            interval = st_module.selectbox("Interval", list(range(1, 16)) + [20,30,45,60,75,90,120,150,180,240,300], index=4, key="atlas_history_interval")
+        elif unit == "hours":
+            interval = st_module.selectbox("Interval", [1,2,3,4,5], key="atlas_history_interval")
+        else:
+            interval = 1
+            st_module.caption("Interval: 1")
+        hx3, hx4 = st_module.columns(2)
+        start_date = hx3.date_input("From date", value=date(2022,1,1), key="atlas_history_from")
+        end_date = hx4.date_input("To date", value=date.today(), key="atlas_history_to")
+        if st_module.button("Fetch historical candles", type="primary", key="atlas_fetch_history"):
+            try:
+                hist = _fetch_upstox_history(upstox_token, instrument_key.strip(), unit, int(interval), start_date, end_date)
+                name = f"Upstox · {instrument_key.strip()} · {unit} {interval}"
+                st_module.session_state.setdefault("atlas_uploaded_datasets", {})[name] = hist
+                datasets[name] = hist
+                st_module.success(f"Loaded {len(hist):,} historical candles. Select this dataset below to chart any available field.")
+            except Exception as exc:
+                st_module.error(str(exc))
     with st_module.expander("Add any dataset to the chart workspace", expanded=not bool(datasets)):
         uploads = st_module.file_uploader("Upload CSV or Excel files", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="atlas_chart_uploads")
         for upload in uploads or []:

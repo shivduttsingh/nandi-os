@@ -83,3 +83,20 @@ def test_historical_snapshots_newest_first_limit_returns_latest_window_in_time_o
         rows = store.historical_snapshots(limit=1, newest_first=True)
         assert len(rows) == 1
         assert rows[0].timestamp == second.timestamp
+
+
+def test_archive_coverage_and_range_count_do_not_load_snapshot_payloads():
+    with TemporaryDirectory() as folder:
+        store = NandiStore(f"{folder}/atlas.db")
+        first, decision = sample_analysis()
+        second = OptionSnapshot(
+            datetime(2026, 8, 4, 10, 5), 25005, 5, 25015, 24985,
+            (OptionLeg(25000, "CE", 1100, 100, 125, 5),),
+            "2026-08-06",
+        )
+        store.save_analysis(first, decision)
+        store.save_analysis(second, decision)
+        assert store.snapshot_coverage() == {
+            "snapshots": 2, "start_date": "2026-08-03", "end_date": "2026-08-04"
+        }
+        assert store.snapshot_count(date(2026, 8, 3), date(2026, 8, 3)) == 1

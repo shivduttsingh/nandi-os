@@ -154,6 +154,9 @@ def render_chart_explorer(st_module, pd_module, live, bars, data_label: str, ups
     if loaded is not None:
         datasets["Loaded NIFTY candles"] = loaded
     if isinstance(live, dict):
+        archived_chain = _safe_frame(live.get("atlas_archived_chain"))
+        if archived_chain is not None:
+            datasets["Archived option-chain history (OI / premium / Greeks)"] = archived_chain
         raw_chain = live.get("upstox_raw_chain")
         if isinstance(raw_chain, list) and raw_chain:
             option_rows = []

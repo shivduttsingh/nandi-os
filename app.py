@@ -383,16 +383,16 @@ elif page == "Options Backtest":
     st.caption("Replays archived, timestamped Upstox option-chain snapshots through the selected evidence strategy. This is a premium-point research simulation, not a live execution result.")
     try:
         archive_store = NandiStore()
-        all_snapshots = archive_store.historical_snapshots(limit=500000)
+        coverage = archive_store.snapshot_coverage()
     except Exception as exc:
-        all_snapshots = []
+        coverage = {"snapshots": 0, "start_date": None, "end_date": None}
         st.error(f"Could not read the option-chain archive: {exc}")
-    if not all_snapshots:
+    if not coverage["snapshots"]:
         st.warning("No archived option-chain snapshots are available yet. Start the read-only capture worker and let it collect data during market hours. Historical option-chain data cannot be reconstructed retroactively if it was never archived.")
     else:
-        min_day = min(item.timestamp.date() for item in all_snapshots)
-        max_day = max(item.timestamp.date() for item in all_snapshots)
-        st.caption(f"Archive coverage: {min_day} through {max_day} · {len(all_snapshots):,} snapshots · nearest-weekly expiry capture")
+        min_day = date.fromisoformat(coverage["start_date"])
+        max_day = date.fromisoformat(coverage["end_date"])
+        st.caption(f"Archive coverage: {min_day} through {max_day} · {coverage['snapshots']:,} snapshots · nearest-weekly expiry capture")
         date_values = st.date_input(
             "Replay date range", value=(min_day, max_day), min_value=min_day, max_value=max_day,
             key="atlas_options_replay_dates",
@@ -401,12 +401,14 @@ elif page == "Options Backtest":
             start_day, end_day = date_values
         else:
             start_day = end_day = date_values
-        selected_snapshots = [
-            item for item in all_snapshots
-            if start_day <= item.timestamp.date() <= end_day
-        ]
+        selected_count = archive_store.snapshot_count(start_day, end_day)
         strategy_name = st.selectbox("Evidence strategy", list(OI_STRATEGY_NAMES), index=5, key="atlas_options_replay_strategy")
-        st.caption(f"Selected {len(selected_snapshots):,} snapshots for {start_day} to {end_day}.")
+        if selected_count > 200000:
+            selected_snapshots = []
+            st.warning(f"This date range contains {selected_count:,} snapshots. Narrow the range to 200,000 snapshots or fewer to keep replay memory bounded.")
+        else:
+            selected_snapshots = archive_store.historical_snapshots(start_day, end_day, limit=200000)
+        st.caption(f"Selected {len(selected_snapshots):,} of {selected_count:,} snapshots for {start_day} to {end_day}.")
         if st.button("Run options replay", type="primary", disabled=not selected_snapshots, key="atlas_run_options_replay"):
             try:
                 replay = run_one_oi_strategy(strategy_name, selected_snapshots)

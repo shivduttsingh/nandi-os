@@ -15,6 +15,7 @@ from nandi_v2.charting import candlestick_chart_html
 from nandi_v2.nse import NSEDataError, NSEPublicClient
 from nandi_v2.strike_window_ui import render_strike_window_charts
 from atlas_workspace import render_chart_explorer, render_strategy_library, render_research_reports
+from nandi_oi.store import NandiStore
 
 def read_upstox_token():
     try:
@@ -149,6 +150,29 @@ if page == "Command Centre":
     c2.metric("A / ORB signals", sum(s.strategy=="A" for s in signals))
     c3.metric("B / Failed breakout", sum(s.strategy=="B" for s in signals))
     c4.metric("Loaded bars", f"{len(bars):,}" if bars is not None else "0")
+    # Shared worker archive: visible only when the separate capture worker has run.
+    try:
+        archive = NandiStore()
+        worker = archive.worker_status()
+        recent_archive = pd.DataFrame(archive.recent_decisions(limit=100))
+        st.markdown("### Continuous data archive")
+        if worker:
+            w1, w2, w3 = st.columns(3)
+            w1.metric("Capture worker", worker.get("status", "UNKNOWN"))
+            w2.metric("Market state", worker.get("market_state", "UNKNOWN"))
+            w3.metric("Last saved snapshot", worker.get("last_snapshot") or "—")
+            if worker.get("last_error"):
+                st.warning(f"Last worker issue: {worker['last_error']}")
+        else:
+            st.info("The background capture worker has not written its first heartbeat. Start the worker with the Docker instructions in the repository README.")
+        if not recent_archive.empty:
+            st.caption("Latest archived decisions from the shared SQLite store. These are historical observations, not a live signal unless timestamps are current.")
+            st.dataframe(recent_archive, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No archived option-chain snapshots yet.")
+    except Exception as archive_error:
+        st.caption(f"Persistent worker archive is not available in this deployment: {archive_error}")
+
     if live:
         nse_spot = live.get("nse_spot")
         st.caption(f"Upstox snapshot: {live.get('upstox_time','—')} · NSE option-chain timestamp: {live.get('nse_time','—')} · NSE spot: {nse_spot:,.2f}" if nse_spot else f"Upstox snapshot: {live.get('upstox_time','—')} · NSE option-chain timestamp: {live.get('nse_time','—')}")

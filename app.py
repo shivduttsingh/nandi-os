@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -16,6 +17,7 @@ from nandi_v2.nse import NSEDataError, NSEPublicClient
 from nandi_v2.strike_window_ui import render_strike_window_charts
 from atlas_workspace import render_chart_explorer, render_strategy_library, render_research_reports
 from nandi_oi.store import NandiStore
+from nandi_oi.unified_backtest import OI_STRATEGY_NAMES, run_one_oi_strategy
 
 def read_upstox_token():
     # Accept either Streamlit's nested [upstox] config or a top-level secret.
@@ -119,7 +121,7 @@ live = st.session_state.live_market
 
 with st.sidebar:
     st.markdown("## ATLAS")
-    page = st.radio("Workspace", ["Command Centre","Chart Explorer","Strategy Lab","Strategy Library","Backtest","Research Reports","Paper Ledger","Data & Controls"], label_visibility="collapsed")
+    page = st.radio("Workspace", ["Command Centre","Chart Explorer","Strategy Lab","Strategy Library","Backtest","Options Backtest","Research Reports","Paper Ledger","Data & Controls"], label_visibility="collapsed")
     st.divider()
     st.caption("MARKET DATA")
     if live:
@@ -375,6 +377,77 @@ elif page == "Paper Ledger":
             st.download_button("Download paper ledger",ledger.to_csv(index=False),"atlas_paper_ledger.csv","text/csv")
     else:
         st.info("No paper trades recorded yet.")
+
+elif page == "Options Backtest":
+    st.subheader("Historical Options Replay")
+    st.caption("Replays archived, timestamped Upstox option-chain snapshots through the selected evidence strategy. This is a premium-point research simulation, not a live execution result.")
+    try:
+        archive_store = NandiStore()
+        all_snapshots = archive_store.historical_snapshots(limit=500000)
+    except Exception as exc:
+        all_snapshots = []
+        st.error(f"Could not read the option-chain archive: {exc}")
+    if not all_snapshots:
+        st.warning("No archived option-chain snapshots are available yet. Start the read-only capture worker and let it collect data during market hours. Historical option-chain data cannot be reconstructed retroactively if it was never archived.")
+    else:
+        min_day = min(item.timestamp.date() for item in all_snapshots)
+        max_day = max(item.timestamp.date() for item in all_snapshots)
+        st.caption(f"Archive coverage: {min_day} through {max_day} · {len(all_snapshots):,} snapshots · nearest-weekly expiry capture")
+        date_values = st.date_input(
+            "Replay date range", value=(min_day, max_day), min_value=min_day, max_value=max_day,
+            key="atlas_options_replay_dates",
+        )
+        if isinstance(date_values, tuple) and len(date_values) == 2:
+            start_day, end_day = date_values
+        else:
+            start_day = end_day = date_values
+        selected_snapshots = [
+            item for item in all_snapshots
+            if start_day <= item.timestamp.date() <= end_day
+        ]
+        strategy_name = st.selectbox("Evidence strategy", list(OI_STRATEGY_NAMES), index=5, key="atlas_options_replay_strategy")
+        st.caption(f"Selected {len(selected_snapshots):,} snapshots for {start_day} to {end_day}.")
+        if st.button("Run options replay", type="primary", disabled=not selected_snapshots, key="atlas_run_options_replay"):
+            try:
+                replay = run_one_oi_strategy(strategy_name, selected_snapshots)
+                run_result = replay.runs[0].result
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Trades", len(run_result.trades))
+                m2.metric("Win rate", f"{run_result.win_rate:.1f}%")
+                m3.metric("Net premium points", f"{run_result.net_points:,.2f}")
+                m4.metric("Max drawdown", f"{run_result.max_drawdown:,.2f}")
+                m5.metric("NO TRADE decisions", run_result.no_trade_decisions)
+                st.session_state["atlas_last_options_replay"] = {
+                    "strategy": strategy_name,
+                    "start": start_day.isoformat(),
+                    "end": end_day.isoformat(),
+                    "summary": replay.summary_rows(),
+                    "trades": replay.ledger_rows(),
+                    "equity": replay.equity_rows(),
+                }
+            except Exception as exc:
+                st.error(f"Options replay failed safely: {exc}")
+        previous_replay = st.session_state.get("atlas_last_options_replay")
+        if previous_replay:
+            st.markdown("### Replay result")
+            st.caption(f"{previous_replay['strategy']} · {previous_replay['start']} to {previous_replay['end']}")
+            if previous_replay["equity"]:
+                equity_frame = pd.DataFrame(previous_replay["equity"])
+                st.plotly_chart(
+                    px.line(equity_frame, x="Closed at", y="Cumulative premium points", color="Strategy run",
+                            title="Cumulative option premium points · historical replay"),
+                    use_container_width=True,
+                )
+            trade_frame = pd.DataFrame(previous_replay["trades"])
+            if not trade_frame.empty:
+                st.dataframe(trade_frame, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download options replay ledger", trade_frame.to_csv(index=False),
+                    "atlas_options_replay.csv", "text/csv",
+                )
+            else:
+                st.info("The selected rules generated no completed trades in this archive window. This is a valid research outcome.")
+            st.warning("Replay quality is limited by snapshot frequency, archived contract coverage and the engine's stop/target assumptions. Validate with option-candle bid/ask fills and out-of-sample periods before treating any result as tradable.")
 
 elif page == "Chart Explorer":
     render_chart_explorer(st, pd, live, bars, st.session_state.data_label, read_upstox_token())

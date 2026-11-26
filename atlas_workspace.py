@@ -239,6 +239,30 @@ def render_chart_explorer(st_module, pd_module, live, bars, data_label: str, ups
                 st_module.success(f"Loaded {len(hist):,} historical candles. Select this dataset below to chart any available field.")
             except Exception as exc:
                 st_module.error(str(exc))
+    with st_module.expander("Fetch live intraday candles for any strike in the latest option chain", expanded=False):
+        if not option_keys:
+            st_module.info("Fetch an Upstox option-chain snapshot in Data & Controls first. The latest chain supplies all available CE/PE strikes and their exact instrument keys.")
+        else:
+            option_labels = [x[0] for x in option_keys]
+            selected_option = st_module.selectbox("Option contract", option_labels, key="atlas_live_option_contract")
+            interval_live = st_module.selectbox("Intraday interval (minutes)", [1,2,3,5,10,15,30,60], index=3, key="atlas_live_option_interval")
+            if st_module.button("Fetch selected option candles", key="atlas_fetch_live_option"):
+                try:
+                    from nandi_oi.upstox import UpstoxOptionChainClient
+                    instrument = dict(option_keys)[selected_option]
+                    client = UpstoxOptionChainClient(access_token=upstox_token)
+                    candles = client.fetch_instrument_intraday_candles(instrument, int(interval_live))
+                    frame = pd.DataFrame([{
+                        "timestamp": c.timestamp, "open": c.open, "high": c.high, "low": c.low,
+                        "close": c.close, "volume": c.volume, "open_interest": getattr(c, "open_interest", 0),
+                        "instrument_key": instrument, "contract": selected_option,
+                    } for c in candles])
+                    name = f"Live option · {selected_option} · {interval_live}m"
+                    st_module.session_state.setdefault("atlas_uploaded_datasets", {})[name] = frame
+                    datasets[name] = frame
+                    st_module.success(f"Loaded {len(frame):,} candles for {selected_option}.")
+                except Exception as exc:
+                    st_module.error(f"Could not fetch this option's candles: {exc}")
     with st_module.expander("Add any dataset to the chart workspace", expanded=not bool(datasets)):
         uploads = st_module.file_uploader("Upload CSV or Excel files", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="atlas_chart_uploads")
         for upload in uploads or []:

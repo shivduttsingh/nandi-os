@@ -159,6 +159,40 @@ class NandiStore:
             ).fetchone()
         return self._decode(row)
 
+    def snapshot_coverage(self) -> dict[str, Any]:
+        """Return archive count and date bounds without loading snapshot payloads."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS snapshots, MIN(substr(captured_at, 1, 10)) AS start_date,
+                       MAX(substr(captured_at, 1, 10)) AS end_date
+                FROM snapshots
+                """
+            ).fetchone()
+        return {
+            "snapshots": int(row["snapshots"] or 0),
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+        }
+
+    def snapshot_count(self, start_date: date | None = None, end_date: date | None = None) -> int:
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("start_date must be on or before end_date")
+        query = "SELECT COUNT(*) AS snapshots FROM snapshots"
+        clauses: list[str] = []
+        values: list[Any] = []
+        if start_date:
+            clauses.append("substr(captured_at, 1, 10) >= ?")
+            values.append(start_date.isoformat())
+        if end_date:
+            clauses.append("substr(captured_at, 1, 10) <= ?")
+            values.append(end_date.isoformat())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._connect() as connection:
+            row = connection.execute(query, values).fetchone()
+        return int(row["snapshots"] or 0)
+
     def historical_snapshots(
         self, start_date: date | None = None, end_date: date | None = None,
         *, limit: int = 200000, newest_first: bool = False,

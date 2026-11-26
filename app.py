@@ -372,6 +372,7 @@ elif page == "Data & Controls":
                 live_result["upstox_spot"] = opt.spot
                 live_result["upstox_time"] = opt.timestamp.strftime("%Y-%m-%d %H:%M:%S")
                 live_result["upstox_chain"] = window_chain_frame(upstox_chain_frame(opt), opt.spot, wings=8)
+                live_result["upstox_raw_chain"] = up.fetch_raw_chain(expiry_choice)
                 live_result["candles"] = candles
                 live_result["upstox_observed_at"] = opt.timestamp
                 try:

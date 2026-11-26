@@ -154,6 +154,30 @@ def render_chart_explorer(st_module, pd_module, live, bars, data_label: str, ups
     if loaded is not None:
         datasets["Loaded NIFTY candles"] = loaded
     if isinstance(live, dict):
+        raw_chain = live.get("upstox_raw_chain")
+        if isinstance(raw_chain, list) and raw_chain:
+            option_rows = []
+            for row in raw_chain:
+                strike = row.get("strike_price")
+                expiry_value = row.get("expiry")
+                for side, key in [("CE","call_options"),("PE","put_options")]:
+                    leg = row.get(key) or {}
+                    market = leg.get("market_data") or {}
+                    greeks = leg.get("option_greeks") or {}
+                    if leg.get("instrument_key"):
+                        option_rows.append({
+                            "strike": strike, "side": side, "expiry": expiry_value,
+                            "instrument_key": leg.get("instrument_key"),
+                            "LTP": market.get("ltp"), "close_price": market.get("close_price"),
+                            "volume": market.get("volume"), "OI": market.get("oi"),
+                            "change_OI": (market.get("oi") or 0) - (market.get("prev_oi") or 0),
+                            "bid": market.get("bid_price"), "ask": market.get("ask_price"),
+                            "delta": greeks.get("delta"), "gamma": greeks.get("gamma"),
+                            "theta": greeks.get("theta"), "vega": greeks.get("vega"),
+                            "IV": greeks.get("iv"), "POP": greeks.get("pop"),
+                        })
+            if option_rows:
+                datasets["Upstox option contracts & Greeks"] = pd.DataFrame(option_rows)
         for key, label in [("upstox_chain", "Upstox option chain"), ("nse_chain", "NSE option chain")]:
             frame = _safe_frame(live.get(key))
             if frame is not None:
@@ -179,10 +203,22 @@ def render_chart_explorer(st_module, pd_module, live, bars, data_label: str, ups
         valid = _safe_frame(frame)
         if valid is not None:
             datasets[name] = valid
+    option_keys = []
+    option_frame = datasets.get("Upstox option contracts & Greeks")
+    if isinstance(option_frame, pd.DataFrame) and not option_frame.empty:
+        option_keys = [
+            (f"{row.strike} {row.side} · {row.expiry}", str(row.instrument_key))
+            for row in option_frame[["strike","side","expiry","instrument_key"]].dropna().itertuples(index=False)
+        ]
     with st_module.expander("Fetch historical candles from Upstox for any instrument", expanded=False):
         st_module.caption("Use an exact Upstox instrument key. Minute/hour availability and maximum request windows depend on the selected interval; ATLAS chunks requests to stay within documented limits.")
         hx1, hx2 = st_module.columns([2,1])
-        instrument_key = hx1.text_input("Upstox instrument key", value="NSE_INDEX|Nifty 50", key="atlas_history_instrument")
+        default_instrument = "NSE_INDEX|Nifty 50"
+        if option_keys:
+            picked = st_module.selectbox("Choose an option from the latest fetched chain", ["NIFTY index"] + [x[0] for x in option_keys], key="atlas_history_option_pick")
+            if picked != "NIFTY index":
+                default_instrument = dict(option_keys).get(picked, default_instrument)
+        instrument_key = hx1.text_input("Upstox instrument key", value=default_instrument, key="atlas_history_instrument")
         unit = hx2.selectbox("Time unit", ["minutes","hours","days","weeks","months"], key="atlas_history_unit")
         if unit == "minutes":
             interval = st_module.selectbox("Interval", list(range(1, 16)) + [20,30,45,60,75,90,120,150,180,240,300], index=4, key="atlas_history_interval")

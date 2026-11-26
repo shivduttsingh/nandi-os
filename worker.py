@@ -1,13 +1,10 @@
-"""Nandi V2 background worker placeholder.
+"""ATLAS background worker entry point.
 
-The old Upstox polling worker is intentionally disabled. Live research runs inside
-the Streamlit app using the NSE adapter. A production worker may be enabled later
-only with an authorised NSE Data feed and the same nandi_v2 decision models.
+The worker is deliberately read-only: it captures Upstox option-chain snapshots,
+runs the existing research engine, and stores decisions in the shared SQLite DB.
+It has no broker order methods or order-routing credentials.
 """
-
-
-def main() -> None:
-    print("Nandi V2 worker is disabled: use the Streamlit app for NSE research mode.")
+from nandi_oi.worker import main
 
 
 if __name__ == "__main__":

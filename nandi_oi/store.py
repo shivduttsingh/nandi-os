@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .evidence import live_evidence
-from .models import Decision, OptionSnapshot
+from .models import Decision, OptionLeg, OptionSnapshot
 
 
 SCHEMA = """
@@ -158,6 +158,46 @@ class NandiStore:
                 """
             ).fetchone()
         return self._decode(row)
+
+    def historical_snapshots(
+        self, start_date: date | None = None, end_date: date | None = None,
+        *, limit: int = 200000,
+    ) -> list[OptionSnapshot]:
+        """Load archived option-chain observations in timestamp order for replay."""
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("start_date must be on or before end_date")
+        query = """
+            SELECT captured_at, spot, spot_change, recent_high, recent_low, expiry, legs_json
+            FROM snapshots
+        """
+        clauses: list[str] = []
+        values: list[Any] = []
+        if start_date:
+            clauses.append("substr(captured_at, 1, 10) >= ?")
+            values.append(start_date.isoformat())
+        if end_date:
+            clauses.append("substr(captured_at, 1, 10) <= ?")
+            values.append(end_date.isoformat())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY captured_at ASC LIMIT ?"
+        values.append(max(1, min(int(limit), 500000)))
+        with self._connect() as connection:
+            rows = connection.execute(query, values).fetchall()
+        snapshots: list[OptionSnapshot] = []
+        for row in rows:
+            raw_legs = json.loads(row["legs_json"])
+            legs = tuple(OptionLeg(**item) for item in raw_legs)
+            snapshots.append(OptionSnapshot(
+                timestamp=datetime.fromisoformat(row["captured_at"]),
+                spot=float(row["spot"]),
+                spot_change=float(row["spot_change"]),
+                recent_high=float(row["recent_high"]),
+                recent_low=float(row["recent_low"]),
+                legs=legs,
+                expiry=str(row["expiry"]),
+            ))
+        return snapshots
 
     def recent_decisions(self, limit: int = 250, trading_day: date | None = None) -> list[dict[str, Any]]:
         query = """

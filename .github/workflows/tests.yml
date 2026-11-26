@@ -18,5 +18,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
       - run: python -m pip check
-      - run: pytest -q
+      - run: pytest -q --strict-config --strict-markers
       - run: python -m py_compile app.py worker.py atlas_engine.py atlas_workspace.py tests/*.py nandi_v2/*.py nandi_oi/*.py

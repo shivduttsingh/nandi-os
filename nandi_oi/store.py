@@ -161,7 +161,7 @@ class NandiStore:
 
     def historical_snapshots(
         self, start_date: date | None = None, end_date: date | None = None,
-        *, limit: int = 200000,
+        *, limit: int = 200000, newest_first: bool = False,
     ) -> list[OptionSnapshot]:
         """Load archived option-chain observations in timestamp order for replay."""
         if start_date and end_date and start_date > end_date:
@@ -180,7 +180,7 @@ class NandiStore:
             values.append(end_date.isoformat())
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY captured_at ASC LIMIT ?"
+        query += " ORDER BY captured_at " + ("DESC" if newest_first else "ASC") + " LIMIT ?"
         values.append(max(1, min(int(limit), 500000)))
         with self._connect() as connection:
             rows = connection.execute(query, values).fetchall()
@@ -197,7 +197,7 @@ class NandiStore:
                 legs=legs,
                 expiry=str(row["expiry"]),
             ))
-        return snapshots
+        return list(reversed(snapshots)) if newest_first else snapshots
 
     def recent_decisions(self, limit: int = 250, trading_day: date | None = None) -> list[dict[str, Any]]:
         query = """

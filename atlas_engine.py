@@ -29,6 +29,19 @@ def normalise_bars(frame: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=list(REQUIRED)).sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
     if df.empty:
         raise ValueError("No valid OHLCV rows were found.")
+    invalid_price = (df[["open", "high", "low", "close"]] <= 0).any(axis=1)
+    invalid_range = (
+        (df["high"] < df["low"])
+        | (df["high"] < df[["open", "close"]].max(axis=1))
+        | (df["low"] > df[["open", "close"]].min(axis=1))
+    )
+    invalid_volume = df["volume"] < 0
+    invalid = invalid_price | invalid_range | invalid_volume
+    if invalid.any():
+        raise ValueError(
+            f"Invalid OHLCV rows: {int(invalid.sum())} row(s) have non-positive prices, "
+            "inconsistent high/low values, or negative volume."
+        )
     if "vwap" in df.columns:
         df["vwap"] = pd.to_numeric(df["vwap"], errors="coerce")
     else:
@@ -93,6 +106,14 @@ def generate_signals(frame: pd.DataFrame, max_hold_bars: int = 9) -> list[Signal
     return sorted(signals, key=lambda x: x.timestamp)
 
 def backtest(frame: pd.DataFrame, strategy: str = "C", risk_reward: float = 2.0, cost_points: float = 1.0, max_hold_bars: int = 9) -> pd.DataFrame:
+    if strategy not in {"A", "B", "C"}:
+        raise ValueError("strategy must be one of: A, B, C")
+    if risk_reward <= 0:
+        raise ValueError("risk_reward must be greater than zero")
+    if cost_points < 0:
+        raise ValueError("cost_points cannot be negative")
+    if max_hold_bars < 1:
+        raise ValueError("max_hold_bars must be at least one")
     df = normalise_bars(frame)
     sigs = generate_signals(df, max_hold_bars=max_hold_bars)
     chosen = []
@@ -117,11 +138,20 @@ def backtest(frame: pd.DataFrame, strategy: str = "C", risk_reward: float = 2.0,
         risk = abs(s.entry_spot - s.stop_spot)
         if risk <= 0:
             continue
+        # Intraday signals must never be carried into the next session by a
+        # historical replay. If the signal is the final bar of the day there
+        # is no observable forward candle, so it cannot be backtested.
+        session_day = df.loc[i, "timestamp"].date()
+        session_indices = df.index[df["timestamp"].dt.date == session_day]
+        session_last = int(session_indices[-1])
+        if i >= session_last:
+            continue
+        exit_idx = min(i + max_hold_bars, session_last)
         target = s.entry_spot + risk * risk_reward if s.side == "CE" else s.entry_spot - risk * risk_reward
-        exit_price = float(df.iloc[min(i+max_hold_bars, len(df)-1)]["close"])
-        exit_time = df.iloc[min(i+max_hold_bars, len(df)-1)]["timestamp"]
+        exit_price = float(df.iloc[exit_idx]["close"])
+        exit_time = df.iloc[exit_idx]["timestamp"]
         outcome = "TIME"
-        for j in range(i+1, min(i+max_hold_bars+1, len(df))):
+        for j in range(i+1, exit_idx+1):
             bar = df.iloc[j]
             if s.side == "CE":
                 if bar["low"] <= s.stop_spot:

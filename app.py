@@ -167,10 +167,21 @@ if page == "Command Centre":
         recent_archive = pd.DataFrame(archive.recent_decisions(limit=100))
         st.markdown("### Continuous data archive")
         if worker:
+            heartbeat_age = None
+            try:
+                heartbeat_at = datetime.fromisoformat(worker.get("last_heartbeat", ""))
+                heartbeat_age = max(0, int((datetime.now() - heartbeat_at).total_seconds()))
+            except (TypeError, ValueError):
+                pass
+            worker_status = worker.get("status", "UNKNOWN")
+            if heartbeat_age is None or heartbeat_age > 180:
+                worker_status = "STALE"
             w1, w2, w3 = st.columns(3)
-            w1.metric("Capture worker", worker.get("status", "UNKNOWN"))
+            w1.metric("Capture worker", worker_status)
             w2.metric("Market state", worker.get("market_state", "UNKNOWN"))
-            w3.metric("Last saved snapshot", worker.get("last_snapshot") or "—")
+            w3.metric("Heartbeat age", f"{heartbeat_age}s" if heartbeat_age is not None else "Unknown")
+            if worker_status == "STALE":
+                st.warning("The worker heartbeat is older than three minutes or cannot be parsed. Do not treat the last saved market snapshot as live.")
             if worker.get("last_error"):
                 st.warning(f"Last worker issue: {worker['last_error']}")
         else:

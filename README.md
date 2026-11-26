@@ -35,3 +35,17 @@ Open **Chart Explorer** and upload one or more CSV or Excel files. For any datas
 - Paper trading only.
 - No live broker orders or order routing.
 - Never put API tokens in source code, uploaded files or public browser JavaScript. Use private Streamlit secrets or environment variables.
+
+
+## Continuous option-chain capture (local / Docker)
+
+The repository includes a separate read-only capture worker. It polls the Upstox NIFTY option chain during the NSE session, runs the research engine, and persists timestamped snapshots, decisions, worker health, alerts and daily summaries in SQLite. It does not place orders.
+
+1. Copy `.env.example` to `.env` and set a valid read-only `UPSTOX_ACCESS_TOKEN`.
+2. Set `NANDI_NSE_HOLIDAYS` to the official holiday dates for the year.
+3. Run `docker compose up -d --build`.
+4. Check `docker compose logs -f worker` and `docker compose ps`.
+
+The dashboard and worker share the Docker named volume at `/app/data`. This is durable across container restarts on that host, but it is not a cloud database and does not synchronize separate Streamlit Cloud instances. For a hosted deployment, provision a persistent database/storage service and configure private credentials before relying on long-term archives. Free tiers have quotas and may sleep; uninterrupted collection requires an always-on host or a continuously running local machine.
+
+Preflight without requesting market data: `docker compose run --rm worker python worker.py --check`.

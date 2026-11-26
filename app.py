@@ -14,6 +14,7 @@ from nandi_oi import UpstoxAPIError, UpstoxOptionChainClient
 from nandi_v2.charting import candlestick_chart_html
 from nandi_v2.nse import NSEDataError, NSEPublicClient
 from nandi_v2.strike_window_ui import render_strike_window_charts
+from atlas_workspace import render_chart_explorer, render_strategy_library, render_research_reports
 
 def read_upstox_token():
     try:
@@ -109,7 +110,7 @@ live = st.session_state.live_market
 
 with st.sidebar:
     st.markdown("## ATLAS")
-    page = st.radio("Workspace", ["Command Centre","Strategy Lab","Backtest","Paper Ledger","Data & Controls"], label_visibility="collapsed")
+    page = st.radio("Workspace", ["Command Centre","Chart Explorer","Strategy Lab","Strategy Library","Backtest","Research Reports","Paper Ledger","Data & Controls"], label_visibility="collapsed")
     st.divider()
     st.caption("MARKET DATA")
     if live:
@@ -343,6 +344,15 @@ elif page == "Paper Ledger":
     else:
         st.info("No paper trades recorded yet.")
 
+elif page == "Chart Explorer":
+    render_chart_explorer(st, pd, live, bars, st.session_state.data_label)
+
+elif page == "Strategy Library":
+    render_strategy_library(st, pd)
+
+elif page == "Research Reports":
+    render_research_reports(st, pd, bars, signals, st.session_state.data_label)
+
 elif page == "Data & Controls":
     st.subheader("Data & Controls")
     st.markdown("### Live read-only market snapshot")
@@ -434,4 +444,4 @@ elif page == "Data & Controls":
     st.caption("Lot size, premium affordability and exchange contract specifications must be checked against the current contract master before any option-level simulation.")
 
 st.divider()
-st.caption("ATLAS Research Build 0.1 · Not investment advice · Paper research only · Manual market snapshots · Option-level backtesting not yet enabled.")
+st.caption("ATLAS Research Terminal · Interactive chart workspace · Modular strategy library · Paper research only · No broker order routing.")

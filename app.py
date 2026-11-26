@@ -57,7 +57,7 @@ def nse_chain_frame(snapshot):
         "PE ΔOI": row.pe.change_oi, "PE volume": row.pe.volume
     } for row in snapshot.rows])
 
-DB_PATH = Path("atlas_paper_ledger.sqlite3")
+DB_PATH = Path(os.getenv("ATLAS_PAPER_DB_PATH", "data/atlas_paper_ledger.sqlite3"))
 st.set_page_config(page_title="ATLAS | NIFTY Options Research", page_icon="A", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -81,6 +81,7 @@ section[data-testid="stSidebar"] .stRadio label{font-weight:600}
 """, unsafe_allow_html=True)
 
 def db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("""CREATE TABLE IF NOT EXISTS paper_trades(
         id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, strategy TEXT NOT NULL,

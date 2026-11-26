@@ -18,8 +18,15 @@ from atlas_workspace import render_chart_explorer, render_strategy_library, rend
 from nandi_oi.store import NandiStore
 
 def read_upstox_token():
+    # Accept either Streamlit's nested [upstox] config or a top-level secret.
     try:
         value = st.secrets["upstox"]["access_token"]
+        if value and str(value).strip():
+            return str(value).strip()
+    except Exception:
+        pass
+    try:
+        value = st.secrets["UPSTOX_ACCESS_TOKEN"]
         if value and str(value).strip():
             return str(value).strip()
     except Exception:

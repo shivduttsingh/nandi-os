@@ -450,7 +450,27 @@ elif page == "Options Backtest":
             st.warning("Replay quality is limited by snapshot frequency, archived contract coverage and the engine's stop/target assumptions. Validate with option-candle bid/ask fills and out-of-sample periods before treating any result as tradable.")
 
 elif page == "Chart Explorer":
-    render_chart_explorer(st, pd, live, bars, st.session_state.data_label, read_upstox_token())
+    chart_live = dict(live or {})
+    try:
+        archived = NandiStore().historical_snapshots(limit=5000, newest_first=True)
+        archived_rows = []
+        for snapshot in archived:
+            for leg in snapshot.legs:
+                archived_rows.append({
+                    "timestamp": snapshot.timestamp, "expiry": snapshot.expiry,
+                    "spot": snapshot.spot, "spot_change": snapshot.spot_change,
+                    "recent_high": snapshot.recent_high, "recent_low": snapshot.recent_low,
+                    "strike": leg.strike, "side": leg.side, "OI": leg.oi,
+                    "change_OI": leg.change_oi, "LTP": leg.ltp,
+                    "change_LTP": leg.change_ltp, "volume": leg.volume,
+                    "bid": leg.bid, "ask": leg.ask, "spread_pct": leg.spread_pct,
+                })
+        if archived_rows:
+            chart_live["atlas_archived_chain"] = pd.DataFrame(archived_rows)
+            st.caption(f"Archived chart data loaded: {len(archived_rows):,} contract observations from the latest {len(archived):,} option-chain snapshots.")
+    except Exception as archive_exc:
+        st.warning(f"Archived option-chain chart data is unavailable: {archive_exc}")
+    render_chart_explorer(st, pd, chart_live, bars, st.session_state.data_label, read_upstox_token())
 
 elif page == "Strategy Library":
     render_strategy_library(st, pd)
